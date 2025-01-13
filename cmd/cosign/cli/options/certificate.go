@@ -15,20 +15,26 @@
 package options
 
 import (
+	"errors"
+
+	"github.com/sigstore/cosign/v2/pkg/cosign"
 	"github.com/spf13/cobra"
 )
 
 // CertVerifyOptions is the wrapper for certificate verification.
 type CertVerifyOptions struct {
 	Cert                         string
-	CertEmail                    string
 	CertIdentity                 string
+	CertIdentityRegexp           string
 	CertOidcIssuer               string
+	CertOidcIssuerRegexp         string
 	CertGithubWorkflowTrigger    string
 	CertGithubWorkflowSha        string
 	CertGithubWorkflowName       string
 	CertGithubWorkflowRepository string
 	CertGithubWorkflowRef        string
+	CAIntermediates              string
+	CARoots                      string
 	CertChain                    string
 	SCT                          string
 	IgnoreSCT                    bool
@@ -42,14 +48,17 @@ func (o *CertVerifyOptions) AddFlags(cmd *cobra.Command) {
 		"path to the public certificate. The certificate will be verified against the Fulcio roots if the --certificate-chain option is not passed.")
 	_ = cmd.Flags().SetAnnotation("certificate", cobra.BashCompFilenameExt, []string{"cert"})
 
-	cmd.Flags().StringVar(&o.CertEmail, "certificate-email", "",
-		"the email expected in a valid Fulcio certificate")
-
 	cmd.Flags().StringVar(&o.CertIdentity, "certificate-identity", "",
-		"the identity expected in a valid Fulcio certificate. Valid values include email address, DNS names, IP addresses, and URIs.")
+		"The identity expected in a valid Fulcio certificate. Valid values include email address, DNS names, IP addresses, and URIs. Either --certificate-identity or --certificate-identity-regexp must be set for keyless flows.")
+
+	cmd.Flags().StringVar(&o.CertIdentityRegexp, "certificate-identity-regexp", "",
+		"A regular expression alternative to --certificate-identity. Accepts the Go regular expression syntax described at https://golang.org/s/re2syntax. Either --certificate-identity or --certificate-identity-regexp must be set for keyless flows.")
 
 	cmd.Flags().StringVar(&o.CertOidcIssuer, "certificate-oidc-issuer", "",
-		"the OIDC issuer expected in a valid Fulcio certificate, e.g. https://token.actions.githubusercontent.com or https://oauth2.sigstore.dev/auth")
+		"The OIDC issuer expected in a valid Fulcio certificate, e.g. https://token.actions.githubusercontent.com or https://oauth2.sigstore.dev/auth. Either --certificate-oidc-issuer or --certificate-oidc-issuer-regexp must be set for keyless flows.")
+
+	cmd.Flags().StringVar(&o.CertOidcIssuerRegexp, "certificate-oidc-issuer-regexp", "",
+		"A regular expression alternative to --certificate-oidc-issuer. Accepts the Go regular expression syntax described at https://golang.org/s/re2syntax. Either --certificate-oidc-issuer or --certificate-oidc-issuer-regexp must be set for keyless flows.")
 
 	// -- Cert extensions begin --
 	// Source: https://github.com/sigstore/fulcio/blob/main/docs/oid-info.md
@@ -68,12 +77,25 @@ func (o *CertVerifyOptions) AddFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&o.CertGithubWorkflowRef, "certificate-github-workflow-ref", "",
 		"contains the ref claim from the GitHub OIDC Identity token that contains the git ref that the workflow run was based upon.")
 	// -- Cert extensions end --
+	cmd.Flags().StringVar(&o.CAIntermediates, "ca-intermediates", "",
+		"path to a file of intermediate CA certificates in PEM format which will be needed "+
+			"when building the certificate chains for the signing certificate. "+
+			"The flag is optional and must be used together with --ca-roots, conflicts with "+
+			"--certificate-chain.")
+	_ = cmd.Flags().SetAnnotation("ca-intermediates", cobra.BashCompFilenameExt, []string{"cert"})
+	cmd.Flags().StringVar(&o.CARoots, "ca-roots", "",
+		"path to a bundle file of CA certificates in PEM format which will be needed "+
+			"when building the certificate chains for the signing certificate. Conflicts with --certificate-chain.")
+	_ = cmd.Flags().SetAnnotation("ca-roots", cobra.BashCompFilenameExt, []string{"cert"})
+
 	cmd.Flags().StringVar(&o.CertChain, "certificate-chain", "",
 		"path to a list of CA certificates in PEM format which will be needed "+
 			"when building the certificate chain for the signing certificate. "+
 			"Must start with the parent intermediate CA certificate of the "+
-			"signing certificate and end with the root certificate")
+			"signing certificate and end with the root certificate. Conflicts with --ca-roots and --ca-intermediates.")
 	_ = cmd.Flags().SetAnnotation("certificate-chain", cobra.BashCompFilenameExt, []string{"cert"})
+	cmd.MarkFlagsMutuallyExclusive("ca-roots", "certificate-chain")
+	cmd.MarkFlagsMutuallyExclusive("ca-intermediates", "certificate-chain")
 
 	cmd.Flags().StringVar(&o.SCT, "sct", "",
 		"path to a detached Signed Certificate Timestamp, formatted as a RFC6962 AddChainResponse struct. "+
@@ -81,4 +103,14 @@ func (o *CertVerifyOptions) AddFlags(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&o.IgnoreSCT, "insecure-ignore-sct", false,
 		"when set, verification will not check that a certificate contains an embedded SCT, a proof of "+
 			"inclusion in a certificate transparency log")
+}
+
+func (o *CertVerifyOptions) Identities() ([]cosign.Identity, error) {
+	if o.CertIdentity == "" && o.CertIdentityRegexp == "" {
+		return nil, errors.New("--certificate-identity or --certificate-identity-regexp is required for verification in keyless mode")
+	}
+	if o.CertOidcIssuer == "" && o.CertOidcIssuerRegexp == "" {
+		return nil, errors.New("--certificate-oidc-issuer or --certificate-oidc-issuer-regexp is required for verification in keyless mode")
+	}
+	return []cosign.Identity{{IssuerRegExp: o.CertOidcIssuerRegexp, Issuer: o.CertOidcIssuer, SubjectRegExp: o.CertIdentityRegexp, Subject: o.CertIdentity}}, nil
 }

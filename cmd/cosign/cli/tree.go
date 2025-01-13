@@ -25,8 +25,8 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/spf13/cobra"
 
-	"github.com/sigstore/cosign/cmd/cosign/cli/options"
-	ociremote "github.com/sigstore/cosign/pkg/oci/remote"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/options"
+	ociremote "github.com/sigstore/cosign/v2/pkg/oci/remote"
 )
 
 func Tree() *cobra.Command {
@@ -115,7 +115,7 @@ func TreeCmd(ctx context.Context, regOpts options.RegistryOptions, imageRef stri
 
 	if len(scsaMap) == 0 {
 		fmt.Fprintf(os.Stdout, "No Supply Chain Security Related Artifacts artifacts found for image %s\n, start creating one with simply running"+
-			"$ COSIGN_EXPERIMENTAL=1 cosign sign <img>", ref.String())
+			"$ cosign sign <img>", ref.String())
 		return nil
 	}
 

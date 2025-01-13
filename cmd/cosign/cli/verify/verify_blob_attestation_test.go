@@ -15,42 +15,54 @@
 package verify
 
 import (
+	"context"
 	"encoding/base64"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 
-	ssldsse "github.com/secure-systems-lab/go-securesystemslib/dsse"
+	protobundle "github.com/sigstore/protobuf-specs/gen/pb-go/bundle/v1"
+	protodsse "github.com/sigstore/protobuf-specs/gen/pb-go/dsse"
+	"google.golang.org/protobuf/encoding/protojson"
+
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/options"
+	"github.com/sigstore/cosign/v2/pkg/cosign/bundle"
 )
+
+const pubkey = `-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAESF79b1ToAtoakhBOHEU5UjnEiihV
+gZPFIp557+TOoDxf14FODWc+sIPETk0OgCplAk60doVXbCv33IU4rXZHrg==
+-----END PUBLIC KEY-----
+`
 
 const (
 	blobContents                         = "some-payload"
 	anotherBlobContents                  = "another-blob"
-	blobSLSAProvenanceSignature          = "eyJwYXlsb2FkVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5pbi10b3RvK2pzb24iLCJwYXlsb2FkIjoiZXlKZmRIbHdaU0k2SW1oMGRIQnpPaTh2YVc0dGRHOTBieTVwYnk5VGRHRjBaVzFsYm5RdmRqQXVNU0lzSW5CeVpXUnBZMkYwWlZSNWNHVWlPaUpvZEhSd2N6b3ZMM05zYzJFdVpHVjJMM0J5YjNabGJtRnVZMlV2ZGpBdU1pSXNJbk4xWW1wbFkzUWlPbHQ3SW01aGJXVWlPaUppYkc5aUlpd2laR2xuWlhOMElqcDdJbk5vWVRJMU5pSTZJalkxT0RjNE1XTmtOR1ZrT1dKallUWXdaR0ZqWkRBNVpqZGlZamt4TkdKaU5URTFNREpsT0dJMVpEWXhPV1kxTjJZek9XRXhaRFkxTWpVNU5tTmpNalFpZlgxZExDSndjbVZrYVdOaGRHVWlPbnNpWW5WcGJHUmxjaUk2ZXlKcFpDSTZJaklpZlN3aVluVnBiR1JVZVhCbElqb2llQ0lzSW1sdWRtOWpZWFJwYjI0aU9uc2lZMjl1Wm1sblUyOTFjbU5sSWpwN2ZYMTlmUT09Iiwic2lnbmF0dXJlcyI6W3sia2V5aWQiOiIiLCJzaWciOiJNR1lDTVFEWHZhVVAwZmlYdXJUcmZNNmtQNjRPcERCM0pzSlEzbFFHZWE5UmZBOVBCY3JmWTJOc0dxK1J0MzdnMlpqaUpKOENNUUNNY3pzVy9wOGJiekZOSkRqeEhlOFNRdTRTazhBa3htTEdLMVE2R2lUazAzb2hHU3dsZkZRNXMrTWxRTFpGZXpBPSJ9XX0="
-	dssePredicateEmptySubject            = "ewogICJwYXlsb2FkVHlwZSI6ICJhcHBsaWNhdGlvbi92bmQuaW4tdG90bytqc29uIiwKICAicGF5bG9hZCI6ICJld29nSUNKZmRIbHdaU0k2SUNKb2RIUndjem92TDJsdUxYUnZkRzh1YVc4dlUzUmhkR1Z0Wlc1MEwzWXdMakVpTEFvZ0lDSndjbVZrYVdOaGRHVlVlWEJsSWpvZ0ltaDBkSEJ6T2k4dmMyeHpZUzVrWlhZdmNISnZkbVZ1WVc1alpTOTJNQzR5SWl3S0lDQWljM1ZpYW1WamRDSTZJRnNLSUNCZExBb2dJQ0p3Y21Wa2FXTmhkR1VpT2lCN0NpQWdJQ0FpWW5WcGJHUmxjaUk2SUhzS0lDQWdJQ0FnSW1sa0lqb2dJaklpQ2lBZ0lDQjlMQW9nSUNBZ0ltSjFhV3hrVkhsd1pTSTZJQ0o0SWl3S0lDQWdJQ0pwYm5adlkyRjBhVzl1SWpvZ2V3b2dJQ0FnSUNBaVkyOXVabWxuVTI5MWNtTmxJam9nZTMwS0lDQWdJSDBLSUNCOUNuMEsiLAogICJzaWduYXR1cmVzIjogWwogICAgewogICAgICAia2V5aWQiOiAiIiwKICAgICAgInNpZyI6ICJNR1lDTVFEWHZhVVAwZmlYdXJUcmZNNmtQNjRPcERCM0pzSlEzbFFHZWE5UmZBOVBCY3JmWTJOc0dxK1J0MzdnMlpqaUpKOENNUUNNY3pzVy9wOGJiekZOSkRqeEhlOFNRdTRTazhBa3htTEdLMVE2R2lUazAzb2hHU3dsZkZRNXMrTWxRTFpGZXpBPSIKICAgIH0KICBdCn0K"
-	dssePredicateMissingSha256           = "ewogICJwYXlsb2FkVHlwZSI6ICJhcHBsaWNhdGlvbi92bmQuaW4tdG90bytqc29uIiwKICAicGF5bG9hZCI6ICJld29nSUNKZmRIbHdaU0k2SUNKb2RIUndjem92TDJsdUxYUnZkRzh1YVc4dlUzUmhkR1Z0Wlc1MEwzWXdMakVpTEFvZ0lDSndjbVZrYVdOaGRHVlVlWEJsSWpvZ0ltaDBkSEJ6T2k4dmMyeHpZUzVrWlhZdmNISnZkbVZ1WVc1alpTOTJNQzR5SWl3S0lDQWljM1ZpYW1WamRDSTZJRnNLSUNBZ0lIc0tJQ0FnSUNBZ0ltNWhiV1VpT2lBaVlteHZZaUlzQ2lBZ0lDQWdJQ0prYVdkbGMzUWlPaUI3Q2lBZ0lDQWdJQ0FnSW01dmRITm9ZVEkxTmlJNklDSTJOVGczT0RGalpEUmxaRGxpWTJFMk1HUmhZMlF3T1dZM1ltSTVNVFJpWWpVeE5UQXlaVGhpTldRMk1UbG1OVGRtTXpsaE1XUTJOVEkxT1Raall6STBJZ29nSUNBZ0lDQjlDaUFnSUNCOUNpQWdYU3dLSUNBaWNISmxaR2xqWVhSbElqb2dld29nSUNBZ0ltSjFhV3hrWlhJaU9pQjdDaUFnSUNBZ0lDSnBaQ0k2SUNJeUlnb2dJQ0FnZlN3S0lDQWdJQ0ppZFdsc1pGUjVjR1VpT2lBaWVDSXNDaUFnSUNBaWFXNTJiMk5oZEdsdmJpSTZJSHNLSUNBZ0lDQWdJbU52Ym1acFoxTnZkWEpqWlNJNklIdDlDaUFnSUNCOUNpQWdmUXA5Q2c9PSIsCiAgInNpZ25hdHVyZXMiOiBbCiAgICB7CiAgICAgICJrZXlpZCI6ICIiLAogICAgICAic2lnIjogIk1HWUNNUURYdmFVUDBmaVh1clRyZk02a1A2NE9wREIzSnNKUTNsUUdlYTlSZkE5UEJjcmZZMk5zR3ErUnQzN2cyWmppSko4Q01RQ01jenNXL3A4YmJ6Rk5KRGp4SGU4U1F1NFNrOEFreG1MR0sxUTZHaVRrMDNvaEdTd2xmRlE1cytNbFFMWkZlekE9IgogICAgfQogIF0KfQo="
-	dssePredicateMultipleSubjects        = "ewogICJwYXlsb2FkVHlwZSI6ICJhcHBsaWNhdGlvbi92bmQuaW4tdG90bytqc29uIiwKICAicGF5bG9hZCI6ICJld29nSUNKZmRIbHdaU0k2SUNKb2RIUndjem92TDJsdUxYUnZkRzh1YVc4dlUzUmhkR1Z0Wlc1MEwzWXdMakVpTEFvZ0lDSndjbVZrYVdOaGRHVlVlWEJsSWpvZ0ltaDBkSEJ6T2k4dmMyeHpZUzVrWlhZdmNISnZkbVZ1WVc1alpTOTJNQzR5SWl3S0lDQWljM1ZpYW1WamRDSTZJRnNLSUNBZ0lIc0tJQ0FnSUNBZ0ltNWhiV1VpT2lBaVlXNXZkR2hsY21Kc2IySWlMQW9nSUNBZ0lDQWlaR2xuWlhOMElqb2dld29nSUNBZ0lDQWdJQ0p6YUdFeU5UWWlPaUFpTlRnek1HWXhOVGd5WVRNek1HRTRNbVEyWkRkak5qRmtNV0UxWVdRM01EWmtOMk0zTkdSak5USTFOVGMxWlRjeE9EVmlObU14WWpJd05UY3hOekkyTmlJS0lDQWdJQ0FnZlFvZ0lDQWdmU3dLSUNBZ0lIc0tJQ0FnSUNBZ0ltNWhiV1VpT2lBaVlteHZZaUlzQ2lBZ0lDQWdJQ0prYVdkbGMzUWlPaUI3Q2lBZ0lDQWdJQ0FnSW5Ob1lUSTFOaUk2SUNJMk5UZzNPREZqWkRSbFpEbGlZMkUyTUdSaFkyUXdPV1kzWW1JNU1UUmlZalV4TlRBeVpUaGlOV1EyTVRsbU5UZG1NemxoTVdRMk5USTFPVFpqWXpJMElnb2dJQ0FnSUNCOUNpQWdJQ0I5Q2lBZ1hTd0tJQ0FpY0hKbFpHbGpZWFJsSWpvZ2V3b2dJQ0FnSW1KMWFXeGtaWElpT2lCN0NpQWdJQ0FnSUNKcFpDSTZJQ0l5SWdvZ0lDQWdmU3dLSUNBZ0lDSmlkV2xzWkZSNWNHVWlPaUFpZUNJc0NpQWdJQ0FpYVc1MmIyTmhkR2x2YmlJNklIc0tJQ0FnSUNBZ0ltTnZibVpwWjFOdmRYSmpaU0k2SUh0OUNpQWdJQ0I5Q2lBZ2ZRcDlDZz09IiwKICAic2lnbmF0dXJlcyI6IFsKICAgIHsKICAgICAgImtleWlkIjogIiIsCiAgICAgICJzaWciOiAiTUdZQ01RRFh2YVVQMGZpWHVyVHJmTTZrUDY0T3BEQjNKc0pRM2xRR2VhOVJmQTlQQmNyZlkyTnNHcStSdDM3ZzJaamlKSjhDTVFDTWN6c1cvcDhiYnpGTkpEanhIZThTUXU0U2s4QWt4bUxHSzFRNkdpVGswM29oR1N3bGZGUTVzK01sUUxaRmV6QT0iCiAgICB9CiAgXQp9Cg=="
-	dssePredicateMultipleSubjectsInvalid = "ewogICJwYXlsb2FkVHlwZSI6ICJhcHBsaWNhdGlvbi92bmQuaW4tdG90bytqc29uIiwKICAicGF5bG9hZCI6ICJld29nSUNKZmRIbHdaU0k2SUNKb2RIUndjem92TDJsdUxYUnZkRzh1YVc4dlUzUmhkR1Z0Wlc1MEwzWXdMakVpTEFvZ0lDSndjbVZrYVdOaGRHVlVlWEJsSWpvZ0ltaDBkSEJ6T2k4dmMyeHpZUzVrWlhZdmNISnZkbVZ1WVc1alpTOTJNQzR5SWl3S0lDQWljM1ZpYW1WamRDSTZJRnNLSUNBZ0lIc0tJQ0FnSUNBZ0ltNWhiV1VpT2lBaVlXNXZkR2hsY21Kc2IySWlMQW9nSUNBZ0lDQWlaR2xuWlhOMElqb2dld29nSUNBZ0lDQWdJQ0p6YUdFeU5UWWlPaUFpTlRnek1HWXhOVGd5WVRNek1HRTRNbVEyWkRkak5qRmtNV0UxWVdRM01EWmtOMk0zTkdSak5USTFOVGMxWlRjeE9EVmlObU14WWpJd05UY3hOekkyTmlJS0lDQWdJQ0FnZlFvZ0lDQWdmU3dLSUNBZ0lIc0tJQ0FnSUNBZ0ltNWhiV1VpT2lBaVlteHZZaUlzQ2lBZ0lDQWdJQ0prYVdkbGMzUWlPaUI3Q2lBZ0lDQWdJQ0FnSW5Ob1lUSTFOaUk2SUNJMU9ETXdaakUxT0RKaE16TXdZVGd5WkRaa04yTTJNV1F4WVRWaFpEY3dObVEzWXpjMFpHTTFNalUxTnpWbE56RTROV0kyWXpGaU1qQTFOekUzTWpZMklnb2dJQ0FnSUNCOUNpQWdJQ0I5Q2lBZ1hTd0tJQ0FpY0hKbFpHbGpZWFJsSWpvZ2V3b2dJQ0FnSW1KMWFXeGtaWElpT2lCN0NpQWdJQ0FnSUNKcFpDSTZJQ0l5SWdvZ0lDQWdmU3dLSUNBZ0lDSmlkV2xzWkZSNWNHVWlPaUFpZUNJc0NpQWdJQ0FpYVc1MmIyTmhkR2x2YmlJNklIc0tJQ0FnSUNBZ0ltTnZibVpwWjFOdmRYSmpaU0k2SUh0OUNpQWdJQ0I5Q2lBZ2ZRcDlDZz09IiwKICAic2lnbmF0dXJlcyI6IFsKICAgIHsKICAgICAgImtleWlkIjogIiIsCiAgICAgICJzaWciOiAiTUdZQ01RRFh2YVVQMGZpWHVyVHJmTTZrUDY0T3BEQjNKc0pRM2xRR2VhOVJmQTlQQmNyZlkyTnNHcStSdDM3ZzJaamlKSjhDTVFDTWN6c1cvcDhiYnpGTkpEanhIZThTUXU0U2s4QWt4bUxHSzFRNkdpVGswM29oR1N3bGZGUTVzK01sUUxaRmV6QT0iCiAgICB9CiAgXQp9Cg=="
+	hugeBlobContents                     = "hugepayloadhugepayloadhugepayloadhugepayloadhugepayloadhugepayloadhugepayloadhugepayloadhugepayloadhugepayloadhugepayloadhugepayloadhugepayload"
+	blobSLSAProvenanceSignature          = "eyJwYXlsb2FkVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5pbi10b3RvK2pzb24iLCJwYXlsb2FkIjoiZXlKZmRIbHdaU0k2SW1oMGRIQnpPaTh2YVc0dGRHOTBieTVwYnk5VGRHRjBaVzFsYm5RdmRqQXVNU0lzSW5CeVpXUnBZMkYwWlZSNWNHVWlPaUpvZEhSd2N6b3ZMM05zYzJFdVpHVjJMM0J5YjNabGJtRnVZMlV2ZGpBdU1pSXNJbk4xWW1wbFkzUWlPbHQ3SW01aGJXVWlPaUppYkc5aUlpd2laR2xuWlhOMElqcDdJbk5vWVRJMU5pSTZJalkxT0RjNE1XTmtOR1ZrT1dKallUWXdaR0ZqWkRBNVpqZGlZamt4TkdKaU5URTFNREpsT0dJMVpEWXhPV1kxTjJZek9XRXhaRFkxTWpVNU5tTmpNalFpZlgxZExDSndjbVZrYVdOaGRHVWlPbnNpWW5WcGJHUmxjaUk2ZXlKcFpDSTZJaklpZlN3aVluVnBiR1JVZVhCbElqb2llQ0lzSW1sdWRtOWpZWFJwYjI0aU9uc2lZMjl1Wm1sblUyOTFjbU5sSWpwN2ZYMTlmUT09Iiwic2lnbmF0dXJlcyI6W3sia2V5aWQiOiIiLCJzaWciOiJNRVVDSUE4S2pacWtydDkwZnpCb2pTd3d0ajNCcWI0MUU2cnV4UWs5N1RMbnB6ZFlBaUVBek9Bak9Uenl2VEhxYnBGREFuNnpocmc2RVp2N2t4SzVmYVJvVkdZTWgyYz0ifV19"
+	dssePredicateEmptySubject            = "eyJwYXlsb2FkVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5pbi10b3RvK2pzb24iLCJwYXlsb2FkIjoiZXlKZmRIbHdaU0k2SW1oMGRIQnpPaTh2YVc0dGRHOTBieTVwYnk5VGRHRjBaVzFsYm5RdmRqQXVNU0lzSW5CeVpXUnBZMkYwWlZSNWNHVWlPaUpvZEhSd2N6b3ZMM05zYzJFdVpHVjJMM0J5YjNabGJtRnVZMlV2ZGpBdU1pSXNJbk4xWW1wbFkzUWlPbHRkTENKd2NtVmthV05oZEdVaU9uc2lZblZwYkdSbGNpSTZleUpwWkNJNklqSWlmU3dpWW5WcGJHUlVlWEJsSWpvaWVDSXNJbWx1ZG05allYUnBiMjRpT25zaVkyOXVabWxuVTI5MWNtTmxJanA3ZlgxOWZRPT0iLCJzaWduYXR1cmVzIjpbeyJrZXlpZCI6IiIsInNpZyI6Ik1FWUNJUUNrTEV2NkhZZ0svZDdUK0N3NTdXbkZGaHFUTC9WalAyVDA5Q2t1dk1nbDRnSWhBT1hBM0lhWWg1M1FscVk1eVU4cWZxRXJma2tGajlEakZnaWovUTQ2NnJSViJ9XX0="
+	dssePredicateMissingSha256           = "eyJwYXlsb2FkVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5pbi10b3RvK2pzb24iLCJwYXlsb2FkIjoiZXlKZmRIbHdaU0k2SW1oMGRIQnpPaTh2YVc0dGRHOTBieTVwYnk5VGRHRjBaVzFsYm5RdmRqQXVNU0lzSW5CeVpXUnBZMkYwWlZSNWNHVWlPaUpvZEhSd2N6b3ZMM05zYzJFdVpHVjJMM0J5YjNabGJtRnVZMlV2ZGpBdU1pSXNJbk4xWW1wbFkzUWlPbHQ3SW01aGJXVWlPaUppYkc5aUlpd2laR2xuWlhOMElqcDdmWDFkTENKd2NtVmthV05oZEdVaU9uc2lZblZwYkdSbGNpSTZleUpwWkNJNklqSWlmU3dpWW5WcGJHUlVlWEJsSWpvaWVDSXNJbWx1ZG05allYUnBiMjRpT25zaVkyOXVabWxuVTI5MWNtTmxJanA3ZlgxOWZRPT0iLCJzaWduYXR1cmVzIjpbeyJrZXlpZCI6IiIsInNpZyI6Ik1FVUNJQysvM2M4RFo1TGFZTEx6SFZGejE3ZmxHUENlZXVNZ2tIKy8wa2s1cFFLUEFpRUFqTStyYnBBRlJybDdpV0I2Vm9BYVZPZ3U3NjRRM0JKdHI1bHk4VEFHczNrPSJ9XX0="
+	dssePredicateMultipleSubjects        = "eyJwYXlsb2FkVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5pbi10b3RvK2pzb24iLCJwYXlsb2FkIjoiZXlKZmRIbHdaU0k2SW1oMGRIQnpPaTh2YVc0dGRHOTBieTVwYnk5VGRHRjBaVzFsYm5RdmRqQXVNU0lzSW5CeVpXUnBZMkYwWlZSNWNHVWlPaUpvZEhSd2N6b3ZMM05zYzJFdVpHVjJMM0J5YjNabGJtRnVZMlV2ZGpBdU1pSXNJbk4xWW1wbFkzUWlPbHQ3SW01aGJXVWlPaUppYkc5aUlpd2laR2xuWlhOMElqcDdJbk5vWVRJMU5pSTZJalkxT0RjNE1XTmtOR1ZrT1dKallUWXdaR0ZqWkRBNVpqZGlZamt4TkdKaU5URTFNREpsT0dJMVpEWXhPV1kxTjJZek9XRXhaRFkxTWpVNU5tTmpNalFpZlgwc2V5SnVZVzFsSWpvaWIzUm9aWElpTENKa2FXZGxjM1FpT25zaWMyaGhNalUySWpvaU1HUmhOVFU1WXpKbU1USTNNak13WVRGbVlXSmpabUppTWpCa05XUmlPR1JpWVRjMk5Ua3lNMk0yWldaak5tWTBPRE14TmpVeE1UbGpOR015WXpWa05DSjlmVjBzSW5CeVpXUnBZMkYwWlNJNmV5SmlkV2xzWkdWeUlqcDdJbWxrSWpvaU1pSjlMQ0ppZFdsc1pGUjVjR1VpT2lKNElpd2lhVzUyYjJOaGRHbHZiaUk2ZXlKamIyNW1hV2RUYjNWeVkyVWlPbnQ5ZlgxOSIsInNpZ25hdHVyZXMiOlt7ImtleWlkIjoiIiwic2lnIjoiTUVZQ0lRQ20yR2FwNzRzbDkyRC80V2FoWHZiVHFrNFVCaHZsb3oreDZSZm1NQXUyaWdJaEFNcXRFV29DalpGdkpmZWJxRDJFank3aTlHaGc0a0V0WE51bVdLbVBtdEphIn1dfQ=="
+	dssePredicateMultipleSubjectsInvalid = "eyJwYXlsb2FkVHlwZSI6ImFwcGxpY2F0aW9uL3ZuZC5pbi10b3RvK2pzb24iLCJwYXlsb2FkIjoiZXlKZmRIbHdaU0k2SW1oMGRIQnpPaTh2YVc0dGRHOTBieTVwYnk5VGRHRjBaVzFsYm5RdmRqQXVNU0lzSW5CeVpXUnBZMkYwWlZSNWNHVWlPaUpvZEhSd2N6b3ZMM05zYzJFdVpHVjJMM0J5YjNabGJtRnVZMlV2ZGpBdU1pSXNJbk4xWW1wbFkzUWlPbHQ3SW01aGJXVWlPaUppYkc5aUlpd2laR2xuWlhOMElqcDdJbk5vWVRJMU5pSTZJbUUyT0RJelpqbGpOekEyTWpCalltWmpOVGt4T0dJMVpUWmtOR0ZoTVRjMFlUaGhNakJrTlRaa1lUVm1NVEEyWWpZMU5qSTNOR013TldRMlptVXhZVGNpZlgwc2V5SnVZVzFsSWpvaWIzUm9aWElpTENKa2FXZGxjM1FpT25zaWMyaGhNalUySWpvaU1HUmhOVFU1WXpKbU1USTNNak13WVRGbVlXSmpabUppTWpCa05XUmlPR1JpWVRjMk5Ua3lNMk0yWldaak5tWTBPRE14TmpVeE1UbGpOR015WXpWa05DSjlmVjBzSW5CeVpXUnBZMkYwWlNJNmV5SmlkV2xzWkdWeUlqcDdJbWxrSWpvaU1pSjlMQ0ppZFdsc1pGUjVjR1VpT2lKNElpd2lhVzUyYjJOaGRHbHZiaUk2ZXlKamIyNW1hV2RUYjNWeVkyVWlPbnQ5ZlgxOSIsInNpZ25hdHVyZXMiOlt7ImtleWlkIjoiIiwic2lnIjoiTUVVQ0lRRGhZbCtWUlBtcWFJc2xxdS9yWGRVbnc2VmpQcXR4RG84bHdqc3p1cWl6MmdJZ0NNRVVlcUZ5RkFZejcyM2IvSTI2L0p3K0U3YkFLMExqeElsUExvTGxPczQ9In1dfQ=="
 )
 
 func TestVerifyBlobAttestation(t *testing.T) {
-	tmpdir := t.TempDir()
-	blobPath := filepath.Join(tmpdir, "blob")
-	if err := os.WriteFile(blobPath, []byte(blobContents), 0755); err != nil {
-		t.Fatal(err)
-	}
-	anotherBlobPath := filepath.Join(tmpdir, "another-blob")
-	if err := os.WriteFile(anotherBlobPath, []byte(anotherBlobContents), 0755); err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpdir)
+	ctx := context.Background()
+	td := t.TempDir()
+	defer os.RemoveAll(td)
+
+	blobPath := writeBlobFile(t, td, blobContents, "blob")
+	anotherBlobPath := writeBlobFile(t, td, anotherBlobContents, "other-blob")
+	hugeBlobPath := writeBlobFile(t, td, hugeBlobContents, "huge-blob")
+	keyRef := writeBlobFile(t, td, pubkey, "cosign.pub")
 
 	tests := []struct {
 		description   string
 		blobPath      string
+		bundlePath    string
 		signature     string
 		predicateType string
+		env           map[string]string
 		shouldErr     bool
 	}{
 		{
@@ -85,11 +97,99 @@ func TestVerifyBlobAttestation(t *testing.T) {
 			signature:     dssePredicateMultipleSubjects,
 			blobPath:      blobPath,
 		}, {
+			description:   "dsse envelope has multiple subjects, one is valid, but we are looking for different predicatetype",
+			predicateType: "notreallyslsaprovenance",
+			signature:     dssePredicateMultipleSubjects,
+			blobPath:      blobPath,
+			shouldErr:     true,
+		}, {
 			description:   "dsse envelope has multiple subjects, none has correct sha256 digest",
 			predicateType: "slsaprovenance",
 			signature:     dssePredicateMultipleSubjectsInvalid,
 			blobPath:      blobPath,
 			shouldErr:     true,
+		}, {
+			description: "override file size limit",
+			signature:   blobSLSAProvenanceSignature,
+			blobPath:    hugeBlobPath,
+			env:         map[string]string{"COSIGN_MAX_ATTACHMENT_SIZE": "128"},
+			shouldErr:   true,
+		}, {
+			description: "verify new bundle with public key",
+			// From blobSLSAProvenanceSignature
+			bundlePath: makeLocalAttestNewBundle(t, "eyJfdHlwZSI6Imh0dHBzOi8vaW4tdG90by5pby9TdGF0ZW1lbnQvdjAuMSIsInByZWRpY2F0ZVR5cGUiOiJodHRwczovL3Nsc2EuZGV2L3Byb3ZlbmFuY2UvdjAuMiIsInN1YmplY3QiOlt7Im5hbWUiOiJibG9iIiwiZGlnZXN0Ijp7InNoYTI1NiI6IjY1ODc4MWNkNGVkOWJjYTYwZGFjZDA5ZjdiYjkxNGJiNTE1MDJlOGI1ZDYxOWY1N2YzOWExZDY1MjU5NmNjMjQifX1dLCJwcmVkaWNhdGUiOnsiYnVpbGRlciI6eyJpZCI6IjIifSwiYnVpbGRUeXBlIjoieCIsImludm9jYXRpb24iOnsiY29uZmlnU291cmNlIjp7fX19fQ==", "application/vnd.in-toto+json", "MEUCIA8KjZqkrt90fzBojSwwtj3Bqb41E6ruxQk97TLnpzdYAiEAzOAjOTzyvTHqbpFDAn6zhrg6EZv7kxK5faRoVGYMh2c="),
+			blobPath:   blobPath,
+		}, {
+			description: "verify new bundle with public key - bad sig",
+			// From blobSLSAProvenanceSignature
+			bundlePath: makeLocalAttestNewBundle(t, "eyJfdHlwZSI6Imh0dHBzOi8vaW4tdG90by5pby9TdGF0ZW1lbnQvdjAuMSIsInByZWRpY2F0ZVR5cGUiOiJodHRwczovL3Nsc2EuZGV2L3Byb3ZlbmFuY2UvdjAuMiIsInN1YmplY3QiOlt7Im5hbWUiOiJibG9iIiwiZGlnZXN0Ijp7InNoYTI1NiI6IjY1ODc4MWNkNGVkOWJjYTYwZGFjZDA5ZjdiYjkxNGJiNTE1MDJlOGI1ZDYxOWY1N2YzOWExZDY1MjU5NmNjMjQifX1dLCJwcmVkaWNhdGUiOnsiYnVpbGRlciI6eyJpZCI6IjIifSwiYnVpbGRUeXBlIjoieCIsImludm9jYXRpb24iOnsiY29uZmlnU291cmNlIjp7fX19fQ==", "application/vnd.in-toto+json", "c29tZXRoaW5nCg=="),
+			blobPath:   blobPath,
+			shouldErr:  true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.description, func(t *testing.T) {
+			for k, v := range test.env {
+				t.Setenv(k, v)
+			}
+			decodedSig, err := base64.StdEncoding.DecodeString(test.signature)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sigRef := writeBlobFile(t, td, string(decodedSig), "signature")
+
+			cmd := VerifyBlobAttestationCommand{
+				KeyOpts:       options.KeyOpts{KeyRef: keyRef},
+				SignaturePath: sigRef,
+				IgnoreTlog:    true,
+				CheckClaims:   true,
+				PredicateType: test.predicateType,
+			}
+			if test.bundlePath != "" {
+				cmd.KeyOpts.BundlePath = test.bundlePath
+				cmd.KeyOpts.NewBundleFormat = true
+				cmd.TrustedRootPath = writeTrustedRootFile(t, td, "{\"mediaType\":\"application/vnd.dev.sigstore.trustedroot+json;version=0.1\"}")
+			}
+			err = cmd.Exec(ctx, test.blobPath)
+
+			if (err != nil) != test.shouldErr {
+				t.Fatalf("verifyBlobAttestation()= %s, expected shouldErr=%t ", err, test.shouldErr)
+			}
+		})
+	}
+}
+
+func TestVerifyBlobAttestationNoCheckClaims(t *testing.T) {
+	ctx := context.Background()
+	td := t.TempDir()
+	defer os.RemoveAll(td)
+
+	blobPath := writeBlobFile(t, td, blobContents, "blob")
+	anotherBlobPath := writeBlobFile(t, td, anotherBlobContents, "other-blob")
+	keyRef := writeBlobFile(t, td, pubkey, "cosign.pub")
+
+	tests := []struct {
+		description string
+		blobPath    string
+		signature   string
+	}{
+		{
+			description: "verify a predicate",
+			blobPath:    blobPath,
+			signature:   blobSLSAProvenanceSignature,
+		}, {
+			description: "verify a predicate no path",
+			signature:   blobSLSAProvenanceSignature,
+		}, {
+			description: "verify a predicate with another blob path",
+			signature:   blobSLSAProvenanceSignature,
+			// This works because we're not checking the claims. It doesn't matter what we put in here - it should pass so long as the DSSE signagure can be verified.
+			blobPath: anotherBlobPath,
+		}, {
+			description: "verify a predicate with /dev/null",
+			signature:   blobSLSAProvenanceSignature,
+			blobPath:    "/dev/null",
 		},
 	}
 
@@ -99,17 +199,60 @@ func TestVerifyBlobAttestation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			sigRef := writeBlobFile(t, td, string(decodedSig), "signature")
 
-			// Verify the signature on the attestation against the provided public key
-			env := ssldsse.Envelope{}
-			if err := json.Unmarshal(decodedSig, &env); err != nil {
-				t.Fatal(err)
+			cmd := VerifyBlobAttestationCommand{
+				KeyOpts:       options.KeyOpts{KeyRef: keyRef},
+				SignaturePath: sigRef,
+				IgnoreTlog:    true,
+				CheckClaims:   false,
+				PredicateType: "slsaprovenance",
 			}
-
-			err = verifyBlobAttestation(env, test.blobPath, test.predicateType)
-			if (err != nil) != test.shouldErr {
-				t.Fatalf("verifyBlobAttestation()= %s, expected shouldErr=%t ", err, test.shouldErr)
+			if err := cmd.Exec(ctx, test.blobPath); err != nil {
+				t.Fatalf("verifyBlobAttestation()= %v", err)
 			}
 		})
 	}
+}
+
+func makeLocalAttestNewBundle(t *testing.T, payload, payloadType, sig string) string {
+	b, err := bundle.MakeProtobufBundle("hint", []byte{}, nil, []byte{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	decodedPayload, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	decodedSig, err := base64.StdEncoding.DecodeString(sig)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b.Content = &protobundle.Bundle_DsseEnvelope{
+		DsseEnvelope: &protodsse.Envelope{
+			Payload:     decodedPayload,
+			PayloadType: payloadType,
+			Signatures: []*protodsse.Signature{
+				{
+					Sig: decodedSig,
+				},
+			},
+		},
+	}
+
+	contents, err := protojson.Marshal(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// write bundle to disk
+	td := t.TempDir()
+	bundlePath := filepath.Join(td, "bundle.sigstore.json")
+	if err := os.WriteFile(bundlePath, contents, 0644); err != nil {
+		t.Fatal(err)
+	}
+	return bundlePath
 }

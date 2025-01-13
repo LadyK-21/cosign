@@ -18,8 +18,10 @@ import (
 	"bytes"
 	"context"
 	"crypto"
+	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -37,24 +39,29 @@ import (
 
 	"github.com/cyberphone/json-canonicalization/go/src/webpki.org/jsoncanonicalizer"
 	"github.com/go-openapi/strfmt"
+	"github.com/go-openapi/swag"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/in-toto/in-toto-golang/in_toto"
 	"github.com/secure-systems-lab/go-securesystemslib/dsse"
-	"github.com/sigstore/cosign/internal/pkg/cosign/payload"
-	"github.com/sigstore/cosign/internal/pkg/cosign/rekor/mock"
-	"github.com/sigstore/cosign/internal/pkg/cosign/tsa"
-	tsaMock "github.com/sigstore/cosign/internal/pkg/cosign/tsa/mock"
-	"github.com/sigstore/cosign/pkg/cosign/bundle"
-	"github.com/sigstore/cosign/pkg/oci/static"
-	"github.com/sigstore/cosign/pkg/types"
-	"github.com/sigstore/cosign/test"
+	"github.com/sigstore/cosign/v2/internal/pkg/cosign/payload"
+	"github.com/sigstore/cosign/v2/internal/pkg/cosign/rekor/mock"
+	"github.com/sigstore/cosign/v2/internal/pkg/cosign/tsa"
+	tsaMock "github.com/sigstore/cosign/v2/internal/pkg/cosign/tsa/mock"
+	"github.com/sigstore/cosign/v2/pkg/cosign/bundle"
+	"github.com/sigstore/cosign/v2/pkg/oci"
+	"github.com/sigstore/cosign/v2/pkg/oci/static"
+	"github.com/sigstore/cosign/v2/pkg/types"
+	"github.com/sigstore/cosign/v2/test"
 	"github.com/sigstore/rekor/pkg/generated/client"
+	"github.com/sigstore/rekor/pkg/generated/client/entries"
 	"github.com/sigstore/rekor/pkg/generated/models"
 	rtypes "github.com/sigstore/rekor/pkg/types"
+	hashedrekord_v001 "github.com/sigstore/rekor/pkg/types/hashedrekord/v0.0.1"
 	"github.com/sigstore/sigstore/pkg/cryptoutils"
 	"github.com/sigstore/sigstore/pkg/signature"
 	"github.com/sigstore/sigstore/pkg/signature/options"
 	"github.com/sigstore/sigstore/pkg/tuf"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/transparency-dev/merkle/rfc6962"
 )
@@ -63,11 +70,11 @@ type mockVerifier struct {
 	shouldErr bool
 }
 
-func (m *mockVerifier) PublicKey(opts ...signature.PublicKeyOption) (crypto.PublicKey, error) {
+func (m *mockVerifier) PublicKey(opts ...signature.PublicKeyOption) (crypto.PublicKey, error) { //nolint: revive
 	return nil, nil
 }
 
-func (m *mockVerifier) VerifySignature(signature, message io.Reader, opts ...signature.VerifyOption) error {
+func (m *mockVerifier) VerifySignature(signature, message io.Reader, opts ...signature.VerifyOption) error { //nolint: revive
 	if m.shouldErr {
 		return errors.New("failure")
 	}
@@ -104,7 +111,7 @@ func appendSlices(slices [][]byte) []byte {
 }
 
 func Test_verifyOCIAttestation(t *testing.T) {
-	stmt, err := json.Marshal(in_toto.ProvenanceStatement{})
+	stmt, err := json.Marshal(in_toto.ProvenanceStatementSLSA02{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +144,7 @@ func Test_verifyOCIAttestation(t *testing.T) {
 func TestVerifyImageSignature(t *testing.T) {
 	rootCert, rootKey, _ := test.GenerateRootCa()
 	subCert, subKey, _ := test.GenerateSubordinateCa(rootCert, rootKey)
-	leafCert, privKey, _ := test.GenerateLeafCert("subject", "oidc-issuer", subCert, subKey)
+	leafCert, privKey, _ := test.GenerateLeafCert("subject@mail.com", "oidc-issuer", subCert, subKey)
 	pemRoot := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: rootCert.Raw})
 	pemSub := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: subCert.Raw})
 	pemLeaf := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafCert.Raw})
@@ -152,7 +159,12 @@ func TestVerifyImageSignature(t *testing.T) {
 	ociSig, _ := static.NewSignature(payload,
 		base64.StdEncoding.EncodeToString(signature),
 		static.WithCertChain(pemLeaf, appendSlices([][]byte{pemSub, pemRoot})))
-	verified, err := VerifyImageSignature(context.TODO(), ociSig, v1.Hash{}, &CheckOpts{RootCerts: rootPool, IgnoreSCT: true, SkipTlogVerify: true})
+	verified, err := VerifyImageSignature(context.TODO(), ociSig, v1.Hash{},
+		&CheckOpts{
+			RootCerts:  rootPool,
+			IgnoreSCT:  true,
+			IgnoreTlog: true,
+			Identities: []Identity{{Subject: "subject@mail.com", Issuer: "oidc-issuer"}}})
 	if err != nil {
 		t.Fatalf("unexpected error while verifying signature, expected no error, got %v", err)
 	}
@@ -167,7 +179,7 @@ func TestVerifyImageSignatureMultipleSubs(t *testing.T) {
 	subCert1, subKey1, _ := test.GenerateSubordinateCa(rootCert, rootKey)
 	subCert2, subKey2, _ := test.GenerateSubordinateCa(subCert1, subKey1)
 	subCert3, subKey3, _ := test.GenerateSubordinateCa(subCert2, subKey2)
-	leafCert, privKey, _ := test.GenerateLeafCert("subject", "oidc-issuer", subCert3, subKey3)
+	leafCert, privKey, _ := test.GenerateLeafCert("subject@mail.com", "oidc-issuer", subCert3, subKey3)
 	pemRoot := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: rootCert.Raw})
 	pemSub1 := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: subCert1.Raw})
 	pemSub2 := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: subCert2.Raw})
@@ -183,7 +195,10 @@ func TestVerifyImageSignatureMultipleSubs(t *testing.T) {
 
 	ociSig, _ := static.NewSignature(payload,
 		base64.StdEncoding.EncodeToString(signature), static.WithCertChain(pemLeaf, appendSlices([][]byte{pemSub3, pemSub2, pemSub1, pemRoot})))
-	verified, err := VerifyImageSignature(context.TODO(), ociSig, v1.Hash{}, &CheckOpts{RootCerts: rootPool, IgnoreSCT: true, SkipTlogVerify: true})
+	verified, err := VerifyImageSignature(context.TODO(), ociSig, v1.Hash{}, &CheckOpts{
+		RootCerts: rootPool,
+		IgnoreSCT: true, IgnoreTlog: true,
+		Identities: []Identity{{Subject: "subject@mail.com", Issuer: "oidc-issuer"}}})
 	if err != nil {
 		t.Fatalf("unexpected error while verifying signature, expected no error, got %v", err)
 	}
@@ -212,7 +227,7 @@ func signEntry(ctx context.Context, t *testing.T, signer signature.Signer, entry
 func CreateTestBundle(ctx context.Context, t *testing.T, rekor signature.Signer, leaf []byte) *bundle.RekorBundle {
 	// generate log ID according to rekor public key
 	pk, _ := rekor.PublicKey(nil)
-	keyID, _ := getLogID(pk)
+	keyID, _ := GetTransparencyLogID(pk)
 	pyld := bundle.RekorPayload{
 		Body:           base64.StdEncoding.EncodeToString(leaf),
 		IntegratedTime: time.Now().Unix(),
@@ -228,6 +243,44 @@ func CreateTestBundle(ctx context.Context, t *testing.T, rekor signature.Signer,
 	return b
 }
 
+func Test_verifySignaturesErrNoSignaturesFound(t *testing.T) {
+	_, _, err := verifySignatures(context.Background(), &fakeOCISignatures{}, v1.Hash{}, nil)
+	var e *ErrNoSignaturesFound
+	if !errors.As(err, &e) {
+		t.Fatalf("%T{%q} is not a %T", err, err, &ErrNoSignaturesFound{})
+	}
+}
+
+func Test_verifySignaturesErrNoMatchingSignatures(t *testing.T) {
+	rootCert, rootKey, _ := test.GenerateRootCa()
+	subCert, subKey, _ := test.GenerateSubordinateCa(rootCert, rootKey)
+	leafCert, privKey, _ := test.GenerateLeafCert("subject@mail.com", "oidc-issuer", subCert, subKey)
+	pemRoot := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: rootCert.Raw})
+	pemSub := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: subCert.Raw})
+	pemLeaf := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafCert.Raw})
+
+	rootPool := x509.NewCertPool()
+	rootPool.AddCert(rootCert)
+
+	payload := []byte{1, 2, 3, 4}
+	h := sha256.Sum256(payload)
+	signature, _ := privKey.Sign(rand.Reader, h[:], crypto.SHA256)
+
+	ociSig, _ := static.NewSignature(payload,
+		base64.StdEncoding.EncodeToString(signature),
+		static.WithCertChain(pemLeaf, appendSlices([][]byte{pemSub, pemRoot})))
+	_, _, err := verifySignatures(context.Background(), &fakeOCISignatures{signatures: []oci.Signature{ociSig}}, v1.Hash{}, &CheckOpts{
+		RootCerts:  rootPool,
+		IgnoreSCT:  true,
+		IgnoreTlog: true,
+		Identities: []Identity{{Subject: "another-subject@mail.com", Issuer: "oidc-issuer"}}})
+
+	var e *ErrNoMatchingSignatures
+	if !errors.As(err, &e) {
+		t.Fatalf("%T{%q} is not a %T", err, err, &ErrNoMatchingSignatures{})
+	}
+}
+
 func TestVerifyImageSignatureWithNoChain(t *testing.T) {
 	ctx := context.Background()
 	rootCert, rootKey, _ := test.GenerateRootCa()
@@ -236,7 +289,7 @@ func TestVerifyImageSignatureWithNoChain(t *testing.T) {
 		t.Fatalf("creating signer: %v", err)
 	}
 
-	leafCert, privKey, _ := test.GenerateLeafCert("subject", "oidc-issuer", rootCert, rootKey)
+	leafCert, privKey, _ := test.GenerateLeafCert("subject@mail.com", "oidc-issuer", rootCert, rootKey)
 	pemLeaf := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafCert.Raw})
 
 	rootPool := x509.NewCertPool()
@@ -247,13 +300,13 @@ func TestVerifyImageSignatureWithNoChain(t *testing.T) {
 	signature, _ := privKey.Sign(rand.Reader, h[:], crypto.SHA256)
 
 	// Create a fake bundle
-	pe, _ := proposedEntry(base64.StdEncoding.EncodeToString(signature), payload, pemLeaf)
+	pe, _ := proposedEntries(base64.StdEncoding.EncodeToString(signature), payload, pemLeaf)
 	entry, _ := rtypes.UnmarshalEntry(pe[0])
 	leaf, _ := entry.Canonicalize(ctx)
 	rekorBundle := CreateTestBundle(ctx, t, sv, leaf)
 	pemBytes, _ := cryptoutils.MarshalPublicKeyToPEM(sv.Public())
-	rekorPubKeys := NewTrustedRekorPubKeys()
-	rekorPubKeys.AddRekorPubKey(pemBytes, tuf.Active)
+	rekorPubKeys := NewTrustedTransparencyLogPubKeys()
+	rekorPubKeys.AddTransparencyLogPubKey(pemBytes, tuf.Active)
 
 	opts := []static.Option{static.WithCertChain(pemLeaf, []byte{}), static.WithBundle(rekorBundle)}
 	ociSig, _ := static.NewSignature(payload, base64.StdEncoding.EncodeToString(signature), opts...)
@@ -262,6 +315,7 @@ func TestVerifyImageSignatureWithNoChain(t *testing.T) {
 		&CheckOpts{
 			RootCerts:    rootPool,
 			IgnoreSCT:    true,
+			Identities:   []Identity{{Subject: "subject@mail.com", Issuer: "oidc-issuer"}},
 			RekorPubKeys: &rekorPubKeys})
 	if err != nil {
 		t.Fatalf("unexpected error %v", err)
@@ -270,10 +324,76 @@ func TestVerifyImageSignatureWithNoChain(t *testing.T) {
 		t.Fatalf("expected verified=true, got verified=false")
 	}
 }
+func TestVerifyImageSignatureWithInvalidPublicKeyType(t *testing.T) {
+	ctx := context.Background()
+	rootCert, rootKey, _ := test.GenerateRootCa()
+	sv, _, err := signature.NewECDSASignerVerifier(elliptic.P256(), rand.Reader, crypto.SHA256)
+	if err != nil {
+		t.Fatalf("creating signer: %v", err)
+	}
+
+	leafCert, privKey, _ := test.GenerateLeafCert("subject@mail.com", "oidc-issuer", rootCert, rootKey)
+	pemLeaf := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafCert.Raw})
+
+	rootPool := x509.NewCertPool()
+	rootPool.AddCert(rootCert)
+
+	payload := []byte{1, 2, 3, 4}
+	h := sha256.Sum256(payload)
+	signature, _ := privKey.Sign(rand.Reader, h[:], crypto.SHA256)
+
+	// Create a fake bundle
+	pe, _ := proposedEntries(base64.StdEncoding.EncodeToString(signature), payload, pemLeaf)
+	entry, _ := rtypes.UnmarshalEntry(pe[0])
+	leaf, _ := entry.Canonicalize(ctx)
+	rekorBundle := CreateTestBundle(ctx, t, sv, leaf)
+	pemBytes, _ := cryptoutils.MarshalPublicKeyToPEM(sv.Public())
+	rekorPubKeys := NewTrustedTransparencyLogPubKeys()
+	// Add one valid key here.
+	rekorPubKeys.AddTransparencyLogPubKey(pemBytes, tuf.Active)
+
+	opts := []static.Option{static.WithCertChain(pemLeaf, []byte{}), static.WithBundle(rekorBundle)}
+	ociSig, _ := static.NewSignature(payload, base64.StdEncoding.EncodeToString(signature), opts...)
+
+	// Then try to validate with keys that are not ecdsa.PublicKey and should
+	// fail.
+	var rsaPrivKey crypto.PrivateKey
+	rsaPrivKey, err = rsa.GenerateKey(rand.Reader, 4096)
+	if err != nil {
+		t.Fatalf("Unable to create RSA test key: %v", err)
+	}
+	var signer crypto.Signer
+	var ok bool
+	if signer, ok = rsaPrivKey.(crypto.Signer); !ok {
+		t.Fatalf("Unable to create signer out of RSA test key: %v", err)
+	}
+	rsaPEM, err := cryptoutils.MarshalPublicKeyToPEM(signer.Public())
+	if err != nil {
+		t.Fatalf("Unable to marshal RSA test key: %v", err)
+	}
+	if err = rekorPubKeys.AddTransparencyLogPubKey(rsaPEM, tuf.Active); err != nil {
+		t.Fatalf("failed to add RSA key to transparency log public keys: %v", err)
+	}
+	verified, err := VerifyImageSignature(context.TODO(), ociSig, v1.Hash{},
+		&CheckOpts{
+			RootCerts:    rootPool,
+			IgnoreSCT:    true,
+			Identities:   []Identity{{Subject: "subject@mail.com", Issuer: "oidc-issuer"}},
+			RekorPubKeys: &rekorPubKeys})
+	if err == nil {
+		t.Fatal("expected error got none")
+	}
+	if !strings.Contains(err.Error(), "is not type ecdsa.PublicKey") {
+		t.Errorf("did not get expected failure message, wanted 'is not type ecdsa.PublicKey' got: %v", err)
+	}
+	if verified == true {
+		t.Fatalf("expected verified=false, got verified=true")
+	}
+}
 
 func TestVerifyImageSignatureWithOnlyRoot(t *testing.T) {
 	rootCert, rootKey, _ := test.GenerateRootCa()
-	leafCert, privKey, _ := test.GenerateLeafCert("subject", "oidc-issuer", rootCert, rootKey)
+	leafCert, privKey, _ := test.GenerateLeafCert("subject@mail.com", "oidc-issuer", rootCert, rootKey)
 	pemRoot := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: rootCert.Raw})
 	pemLeaf := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafCert.Raw})
 
@@ -285,7 +405,12 @@ func TestVerifyImageSignatureWithOnlyRoot(t *testing.T) {
 	signature, _ := privKey.Sign(rand.Reader, h[:], crypto.SHA256)
 
 	ociSig, _ := static.NewSignature(payload, base64.StdEncoding.EncodeToString(signature), static.WithCertChain(pemLeaf, pemRoot))
-	verified, err := VerifyImageSignature(context.TODO(), ociSig, v1.Hash{}, &CheckOpts{RootCerts: rootPool, IgnoreSCT: true, SkipTlogVerify: true})
+	verified, err := VerifyImageSignature(context.TODO(), ociSig, v1.Hash{},
+		&CheckOpts{
+			RootCerts:  rootPool,
+			IgnoreSCT:  true,
+			Identities: []Identity{{Subject: "subject@mail.com", Issuer: "oidc-issuer"}},
+			IgnoreTlog: true})
 	if err != nil {
 		t.Fatalf("unexpected error while verifying signature, expected no error, got %v", err)
 	}
@@ -298,7 +423,7 @@ func TestVerifyImageSignatureWithOnlyRoot(t *testing.T) {
 func TestVerifyImageSignatureWithMissingSub(t *testing.T) {
 	rootCert, rootKey, _ := test.GenerateRootCa()
 	subCert, subKey, _ := test.GenerateSubordinateCa(rootCert, rootKey)
-	leafCert, privKey, _ := test.GenerateLeafCert("subject", "oidc-issuer", subCert, subKey)
+	leafCert, privKey, _ := test.GenerateLeafCert("subject@mail.com", "oidc-issuer", subCert, subKey)
 	pemRoot := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: rootCert.Raw})
 	pemLeaf := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafCert.Raw})
 
@@ -310,7 +435,12 @@ func TestVerifyImageSignatureWithMissingSub(t *testing.T) {
 	signature, _ := privKey.Sign(rand.Reader, h[:], crypto.SHA256)
 
 	ociSig, _ := static.NewSignature(payload, base64.StdEncoding.EncodeToString(signature), static.WithCertChain(pemLeaf, pemRoot))
-	verified, err := VerifyImageSignature(context.TODO(), ociSig, v1.Hash{}, &CheckOpts{RootCerts: rootPool, IgnoreSCT: true, SkipTlogVerify: true})
+	verified, err := VerifyImageSignature(context.TODO(), ociSig, v1.Hash{},
+		&CheckOpts{
+			RootCerts:  rootPool,
+			IgnoreSCT:  true,
+			Identities: []Identity{{Subject: "subject@mail.com", Issuer: "oidc-issuer"}},
+			IgnoreTlog: true})
 	if err == nil {
 		t.Fatal("expected error while verifying signature")
 	}
@@ -326,7 +456,7 @@ func TestVerifyImageSignatureWithMissingSub(t *testing.T) {
 func TestVerifyImageSignatureWithExistingSub(t *testing.T) {
 	rootCert, rootKey, _ := test.GenerateRootCa()
 	subCert, subKey, _ := test.GenerateSubordinateCa(rootCert, rootKey)
-	leafCert, privKey, _ := test.GenerateLeafCert("subject", "oidc-issuer", subCert, subKey)
+	leafCert, privKey, _ := test.GenerateLeafCert("subject@mail.com", "oidc-issuer", subCert, subKey)
 	pemRoot := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: rootCert.Raw})
 	pemSub := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: subCert.Raw})
 	pemLeaf := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafCert.Raw})
@@ -346,7 +476,13 @@ func TestVerifyImageSignatureWithExistingSub(t *testing.T) {
 	ociSig, _ := static.NewSignature(payload,
 		base64.StdEncoding.EncodeToString(signature),
 		static.WithCertChain(pemLeaf, appendSlices([][]byte{pemSub, pemRoot})))
-	verified, err := VerifyImageSignature(context.TODO(), ociSig, v1.Hash{}, &CheckOpts{RootCerts: rootPool, IntermediateCerts: subPool, IgnoreSCT: true, SkipTlogVerify: true})
+	verified, err := VerifyImageSignature(context.TODO(), ociSig, v1.Hash{},
+		&CheckOpts{
+			RootCerts:         rootPool,
+			IntermediateCerts: subPool,
+			IgnoreSCT:         true,
+			Identities:        []Identity{{Subject: "subject@mail.com", Issuer: "oidc-issuer"}},
+			IgnoreTlog:        true})
 	if err == nil {
 		t.Fatal("expected error while verifying signature")
 	}
@@ -393,40 +529,111 @@ func uuid(e models.LogEntryAnon) string {
 	return hex.EncodeToString(rfc6962.DefaultHasher.HashLeaf(entryBytes))
 }
 
-// This test ensures that image signature validation fails properly if we are
-// using a SigVerifier with Rekor.
-// In other words, we require checking against RekorPubKeys when verifying
-// image signature.
-// This could be made more robust with supplying a mismatched trusted RekorPubKeys
-// rather than none.
-// See https://github.com/sigstore/cosign/issues/1816 for more details.
-func TestVerifyImageSignatureWithSigVerifierAndRekor(t *testing.T) {
-	sv, privKey, err := signature.NewDefaultECDSASignerVerifier()
-	if err != nil {
-		t.Fatalf("error generating verifier: %v", err)
+func TestImageSignatureVerificationWithRekor(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Generate ECDSA signer and public key for signing the blob.
+	signer, publicKey := generateSigner(t)
+	blob, blobSignature, blobSignatureBase64 := generateBlobSignature(t, signer)
+
+	// Create an OCI signature which will be verified.
+	ociSignature, err := static.NewSignature(blob, blobSignatureBase64)
+	require.NoError(t, err, "error creating OCI signature")
+
+	// Set up mock Rekor signer and log ID.
+	rekorSigner, rekorPublicKey := generateSigner(t)
+	logID := calculateLogID(t, rekorPublicKey)
+
+	// Create a mock Rekor log entry to simulate Rekor behavior.
+	rekorEntry := createRekorEntry(ctx, t, logID, rekorSigner, blob, blobSignature, publicKey)
+
+	// Mock Rekor client to return the mock log entry for verification.
+	mockClient := &client.Rekor{
+		Entries: &mockEntriesClient{
+			searchLogQueryFunc: func(_ *entries.SearchLogQueryParams, _ ...entries.ClientOption) (*entries.SearchLogQueryOK, error) {
+				return &entries.SearchLogQueryOK{
+					Payload: []models.LogEntry{*rekorEntry},
+				}, nil
+			},
+		},
 	}
 
-	payload := []byte{1, 2, 3, 4}
-	h := sha256.Sum256(payload)
-	sig, _ := privKey.Sign(rand.Reader, h[:], crypto.SHA256)
-	ociSig, _ := static.NewSignature(payload, base64.StdEncoding.EncodeToString(sig))
-
-	// Add a fake rekor client - this makes it look like there's a matching
-	// tlog entry for the signature during validation (even though it does not
-	// match the underlying data / key)
-	mClient := new(client.Rekor)
-	mClient.Entries = &mock.EntriesClient{
-		Entries: []*models.LogEntry{&data},
+	// Define trusted Rekor public keys for verification.
+	trustedRekorPubKeys := &TrustedTransparencyLogPubKeys{
+		Keys: map[string]TransparencyLogPubKey{
+			logID: {
+				PubKey: rekorPublicKey,
+				Status: tuf.Active,
+			},
+		},
 	}
 
-	if _, err := VerifyImageSignature(context.TODO(), ociSig, v1.Hash{}, &CheckOpts{
-		SigVerifier: sv,
-		RekorClient: mClient,
-	}); err == nil || !strings.Contains(err.Error(), "no valid tlog entries found no trusted rekor public keys provided") {
-		// This is failing to validate the Rekor public key itself.
-		// At the very least this ensures
-		// that we're hitting tlog validation during signature checking.
-		t.Fatalf("expected error while verifying signature, got %s", err)
+	// Generate non-matching public key for failure test cases.
+	_, nonMatchingPublicKey := generateSigner(t)
+	nonMatchingRekorPubKeys := &TrustedTransparencyLogPubKeys{
+		Keys: map[string]TransparencyLogPubKey{
+			logID: {
+				PubKey: nonMatchingPublicKey,
+				Status: tuf.Active,
+			},
+		},
+	}
+
+	tests := []struct {
+		name        string
+		checkOpts   CheckOpts
+		rekorClient *client.Rekor
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name: "Verification succeeds with valid Rekor public keys",
+			checkOpts: CheckOpts{
+				SigVerifier:  signer,
+				RekorClient:  mockClient,
+				RekorPubKeys: trustedRekorPubKeys,
+				Identities:   []Identity{{Subject: "subject@mail.com", Issuer: "oidc-issuer"}},
+			},
+			rekorClient: mockClient,
+			expectError: false,
+		},
+		{
+			name: "Verification fails with no Rekor public keys",
+			checkOpts: CheckOpts{
+				SigVerifier: signer,
+				RekorClient: mockClient,
+				Identities:  []Identity{{Subject: "subject@mail.com", Issuer: "oidc-issuer"}},
+			},
+			rekorClient: mockClient,
+			expectError: true,
+			errorMsg:    "no valid tlog entries found no trusted rekor public keys provided",
+		},
+		{
+			name: "Verification fails with non-matching Rekor public keys",
+			checkOpts: CheckOpts{
+				SigVerifier:  signer,
+				RekorClient:  mockClient,
+				RekorPubKeys: nonMatchingRekorPubKeys,
+				Identities:   []Identity{{Subject: "subject@mail.com", Issuer: "oidc-issuer"}},
+			},
+			rekorClient: mockClient,
+			expectError: true,
+			errorMsg:    "verifying signedEntryTimestamp: unable to verify SET",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bundleVerified, err := VerifyImageSignature(ctx, ociSignature, v1.Hash{}, &tt.checkOpts)
+			if tt.expectError {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errorMsg)
+			} else {
+				assert.NoError(t, err)
+				assert.True(t, bundleVerified, "bundle verification failed")
+			}
+		})
 	}
 }
 
@@ -443,15 +650,14 @@ func TestVerifyImageSignatureWithSigVerifierAndTSA(t *testing.T) {
 	payloadSigner := payload.NewSigner(sv)
 	testSigner := tsa.NewSigner(payloadSigner, client)
 
-	chain, err := client.Timestamp.GetTimestampCertChain(nil)
+	certChainPEM, err := cryptoutils.MarshalCertificatesToPEM(client.CertChain)
 	if err != nil {
-		t.Fatalf("unexpected error getting timestamp chain: %v", err)
+		t.Fatalf("unexpected error marshalling cert chain: %v", err)
 	}
 
-	tsaCertPool := x509.NewCertPool()
-	ok := tsaCertPool.AppendCertsFromPEM([]byte(chain.Payload))
-	if !ok {
-		t.Fatal("error parsing response into Timestamp while appending certs from PEM")
+	leaves, intermediates, roots, err := tsa.SplitPEMCertificateChain(certChainPEM)
+	if err != nil {
+		t.Fatal("error splitting response into certificate chain")
 	}
 
 	payload := []byte{1, 2, 3, 4}
@@ -460,9 +666,11 @@ func TestVerifyImageSignatureWithSigVerifierAndTSA(t *testing.T) {
 		t.Fatalf("error signing the payload with the tsa client server: %v", err)
 	}
 	if bundleVerified, err := VerifyImageSignature(context.TODO(), sig, v1.Hash{}, &CheckOpts{
-		SigVerifier:    sv,
-		TSACerts:       tsaCertPool,
-		SkipTlogVerify: true,
+		SigVerifier:                 sv,
+		TSACertificate:              leaves[0],
+		TSAIntermediateCertificates: intermediates,
+		TSARootCertificates:         roots,
+		IgnoreTlog:                  true,
 	}); err != nil || bundleVerified { // bundle is not verified since there's no Rekor bundle
 		t.Fatalf("unexpected error while verifying signature, got %v", err)
 	}
@@ -488,15 +696,14 @@ func TestVerifyImageSignatureWithSigVerifierAndRekorTSA(t *testing.T) {
 	payloadSigner := payload.NewSigner(sv)
 	tsaSigner := tsa.NewSigner(payloadSigner, client)
 
-	chain, err := client.Timestamp.GetTimestampCertChain(nil)
+	certChainPEM, err := cryptoutils.MarshalCertificatesToPEM(client.CertChain)
 	if err != nil {
-		t.Fatalf("unexpected error getting timestamp chain: %v", err)
+		t.Fatalf("unexpected error marshalling cert chain: %v", err)
 	}
 
-	tsaCertPool := x509.NewCertPool()
-	ok := tsaCertPool.AppendCertsFromPEM([]byte(chain.Payload))
-	if !ok {
-		t.Fatal("error parsing response into Timestamp while appending certs from PEM")
+	leaves, intermediates, roots, err := tsa.SplitPEMCertificateChain(certChainPEM)
+	if err != nil {
+		t.Fatal("error splitting response into certificate chain")
 	}
 
 	payload := []byte{1, 2, 3, 4}
@@ -505,9 +712,11 @@ func TestVerifyImageSignatureWithSigVerifierAndRekorTSA(t *testing.T) {
 		t.Fatalf("error signing the payload with the rekor and tsa clients: %v", err)
 	}
 	if _, err := VerifyImageSignature(context.TODO(), sig, v1.Hash{}, &CheckOpts{
-		SigVerifier: sv,
-		TSACerts:    tsaCertPool,
-		RekorClient: mClient,
+		SigVerifier:                 sv,
+		TSACertificate:              leaves[0],
+		TSAIntermediateCertificates: intermediates,
+		TSARootCertificates:         roots,
+		RekorClient:                 mClient,
 	}); err == nil || !strings.Contains(err.Error(), "no trusted rekor public keys provided") {
 		// TODO(wlynch): This is a weak test, since this is really failing because
 		// there is no inclusion proof for the Rekor entry rather than failing to
@@ -531,10 +740,9 @@ func TestValidateAndUnpackCertSuccess(t *testing.T) {
 	rootPool.AddCert(rootCert)
 
 	co := &CheckOpts{
-		RootCerts:      rootPool,
-		CertEmail:      subject,
-		CertOidcIssuer: oidcIssuer,
-		IgnoreSCT:      true,
+		RootCerts:  rootPool,
+		IgnoreSCT:  true,
+		Identities: []Identity{{Subject: subject, Issuer: oidcIssuer}},
 	}
 
 	_, err := ValidateAndUnpackCert(leafCert, co)
@@ -558,8 +766,9 @@ func TestValidateAndUnpackCertSuccessAllowAllValues(t *testing.T) {
 	rootPool.AddCert(rootCert)
 
 	co := &CheckOpts{
-		RootCerts: rootPool,
-		IgnoreSCT: true,
+		RootCerts:  rootPool,
+		IgnoreSCT:  true,
+		Identities: []Identity{{Subject: subject, Issuer: oidcIssuer}},
 	}
 
 	_, err := ValidateAndUnpackCert(leafCert, co)
@@ -583,9 +792,8 @@ func TestValidateAndUnpackCertWithoutRequiredSCT(t *testing.T) {
 	rootPool.AddCert(rootCert)
 
 	co := &CheckOpts{
-		RootCerts:      rootPool,
-		CertEmail:      subject,
-		CertOidcIssuer: oidcIssuer,
+		RootCerts:  rootPool,
+		Identities: []Identity{{Subject: subject, Issuer: oidcIssuer}},
 		// explicitly set to false
 		IgnoreSCT: false,
 	}
@@ -612,10 +820,9 @@ func TestValidateAndUnpackCertSuccessWithDnsSan(t *testing.T) {
 	rootPool.AddCert(rootCert)
 
 	co := &CheckOpts{
-		RootCerts:      rootPool,
-		CertIdentity:   subject,
-		CertOidcIssuer: oidcIssuer,
-		IgnoreSCT:      true,
+		RootCerts:  rootPool,
+		Identities: []Identity{{Subject: subject, Issuer: oidcIssuer}},
+		IgnoreSCT:  true,
 	}
 
 	_, err := ValidateAndUnpackCert(leafCert, co)
@@ -646,10 +853,9 @@ func TestValidateAndUnpackCertSuccessWithEmailSan(t *testing.T) {
 	rootPool.AddCert(rootCert)
 
 	co := &CheckOpts{
-		RootCerts:      rootPool,
-		CertIdentity:   subject,
-		CertOidcIssuer: oidcIssuer,
-		IgnoreSCT:      true,
+		RootCerts:  rootPool,
+		Identities: []Identity{{Subject: subject, Issuer: oidcIssuer}},
+		IgnoreSCT:  true,
 	}
 
 	_, err := ValidateAndUnpackCert(leafCert, co)
@@ -680,10 +886,9 @@ func TestValidateAndUnpackCertSuccessWithIpAddressSan(t *testing.T) {
 	rootPool.AddCert(rootCert)
 
 	co := &CheckOpts{
-		RootCerts:      rootPool,
-		CertIdentity:   subject,
-		CertOidcIssuer: oidcIssuer,
-		IgnoreSCT:      true,
+		RootCerts:  rootPool,
+		Identities: []Identity{{Subject: subject, Issuer: oidcIssuer}},
+		IgnoreSCT:  true,
 	}
 
 	_, err := ValidateAndUnpackCert(leafCert, co)
@@ -714,10 +919,9 @@ func TestValidateAndUnpackCertSuccessWithUriSan(t *testing.T) {
 	rootPool.AddCert(rootCert)
 
 	co := &CheckOpts{
-		RootCerts:      rootPool,
-		CertIdentity:   "scheme://userinfo@host",
-		CertOidcIssuer: oidcIssuer,
-		IgnoreSCT:      true,
+		RootCerts:  rootPool,
+		Identities: []Identity{{Subject: "scheme://userinfo@host", Issuer: oidcIssuer}},
+		IgnoreSCT:  true,
 	}
 
 	_, err := ValidateAndUnpackCert(leafCert, co)
@@ -748,10 +952,9 @@ func TestValidateAndUnpackCertSuccessWithOtherNameSan(t *testing.T) {
 	rootPool.AddCert(rootCert)
 
 	co := &CheckOpts{
-		RootCerts:      rootPool,
-		CertIdentity:   subject,
-		CertOidcIssuer: oidcIssuer,
-		IgnoreSCT:      true,
+		RootCerts:  rootPool,
+		Identities: []Identity{{Subject: subject, Issuer: oidcIssuer}},
+		IgnoreSCT:  true,
 	}
 
 	_, err = ValidateAndUnpackCert(leafCert, co)
@@ -777,10 +980,9 @@ func TestValidateAndUnpackCertInvalidRoot(t *testing.T) {
 	rootPool.AddCert(otherRoot)
 
 	co := &CheckOpts{
-		RootCerts:      rootPool,
-		CertEmail:      subject,
-		CertOidcIssuer: oidcIssuer,
-		IgnoreSCT:      true,
+		RootCerts:  rootPool,
+		Identities: []Identity{{Subject: subject, Issuer: oidcIssuer}},
+		IgnoreSCT:  true,
 	}
 
 	_, err := ValidateAndUnpackCert(leafCert, co)
@@ -798,16 +1000,15 @@ func TestValidateAndUnpackCertInvalidOidcIssuer(t *testing.T) {
 	rootPool.AddCert(rootCert)
 
 	co := &CheckOpts{
-		RootCerts:      rootPool,
-		CertEmail:      subject,
-		CertOidcIssuer: "other",
-		IgnoreSCT:      true,
+		RootCerts:  rootPool,
+		Identities: []Identity{{Subject: subject, Issuer: "other"}},
+		IgnoreSCT:  true,
 	}
 
 	_, err := ValidateAndUnpackCert(leafCert, co)
-	require.Contains(t, err.Error(), "expected oidc issuer not found in certificate")
+	require.Contains(t, err.Error(), "none of the expected identities matched what was in the certificate")
 	err = CheckCertificatePolicy(leafCert, co)
-	require.Contains(t, err.Error(), "expected oidc issuer not found in certificate")
+	require.Contains(t, err.Error(), "none of the expected identities matched what was in the certificate")
 }
 
 func TestValidateAndUnpackCertInvalidEmail(t *testing.T) {
@@ -821,16 +1022,15 @@ func TestValidateAndUnpackCertInvalidEmail(t *testing.T) {
 	rootPool.AddCert(rootCert)
 
 	co := &CheckOpts{
-		RootCerts:      rootPool,
-		CertEmail:      "other",
-		CertOidcIssuer: oidcIssuer,
-		IgnoreSCT:      true,
+		RootCerts:  rootPool,
+		Identities: []Identity{{Subject: "other", Issuer: oidcIssuer}},
+		IgnoreSCT:  true,
 	}
 
 	_, err := ValidateAndUnpackCert(leafCert, co)
-	require.Contains(t, err.Error(), "expected identity not found in certificate")
+	require.Contains(t, err.Error(), "none of the expected identities matched what was in the certificate")
 	err = CheckCertificatePolicy(leafCert, co)
-	require.Contains(t, err.Error(), "expected identity not found in certificate")
+	require.Contains(t, err.Error(), "none of the expected identities matched what was in the certificate")
 }
 
 func TestValidateAndUnpackCertInvalidGithubWorkflowTrigger(t *testing.T) {
@@ -846,9 +1046,8 @@ func TestValidateAndUnpackCertInvalidGithubWorkflowTrigger(t *testing.T) {
 
 	co := &CheckOpts{
 		RootCerts:                 rootPool,
-		CertEmail:                 subject,
+		Identities:                []Identity{{Subject: subject, Issuer: oidcIssuer}},
 		CertGithubWorkflowTrigger: "otherTrigger",
-		CertOidcIssuer:            oidcIssuer,
 		IgnoreSCT:                 true,
 	}
 
@@ -871,9 +1070,8 @@ func TestValidateAndUnpackCertInvalidGithubWorkflowSHA(t *testing.T) {
 
 	co := &CheckOpts{
 		RootCerts:             rootPool,
-		CertEmail:             subject,
+		Identities:            []Identity{{Subject: subject, Issuer: oidcIssuer}},
 		CertGithubWorkflowSha: "otherSHA",
-		CertOidcIssuer:        oidcIssuer,
 		IgnoreSCT:             true,
 	}
 
@@ -896,9 +1094,8 @@ func TestValidateAndUnpackCertInvalidGithubWorkflowName(t *testing.T) {
 
 	co := &CheckOpts{
 		RootCerts:              rootPool,
-		CertEmail:              subject,
+		Identities:             []Identity{{Subject: subject, Issuer: oidcIssuer}},
 		CertGithubWorkflowName: "otherName",
-		CertOidcIssuer:         oidcIssuer,
 		IgnoreSCT:              true,
 	}
 
@@ -921,9 +1118,8 @@ func TestValidateAndUnpackCertInvalidGithubWorkflowRepository(t *testing.T) {
 
 	co := &CheckOpts{
 		RootCerts:                    rootPool,
-		CertEmail:                    subject,
+		Identities:                   []Identity{{Subject: subject, Issuer: oidcIssuer}},
 		CertGithubWorkflowRepository: "otherRepository",
-		CertOidcIssuer:               oidcIssuer,
 		IgnoreSCT:                    true,
 	}
 
@@ -946,9 +1142,8 @@ func TestValidateAndUnpackCertInvalidGithubWorkflowRef(t *testing.T) {
 
 	co := &CheckOpts{
 		RootCerts:             rootPool,
-		CertEmail:             subject,
+		Identities:            []Identity{{Subject: subject, Issuer: oidcIssuer}},
 		CertGithubWorkflowRef: "otherRef",
-		CertOidcIssuer:        oidcIssuer,
 		IgnoreSCT:             true,
 	}
 
@@ -967,9 +1162,8 @@ func TestValidateAndUnpackCertWithChainSuccess(t *testing.T) {
 	leafCert, _, _ := test.GenerateLeafCert(subject, oidcIssuer, subCert, subKey)
 
 	co := &CheckOpts{
-		CertEmail:      subject,
-		CertOidcIssuer: oidcIssuer,
-		IgnoreSCT:      true,
+		Identities: []Identity{{Subject: subject, Issuer: oidcIssuer}},
+		IgnoreSCT:  true,
 	}
 
 	_, err := ValidateAndUnpackCertWithChain(leafCert, []*x509.Certificate{subCert, leafCert}, co)
@@ -986,9 +1180,8 @@ func TestValidateAndUnpackCertWithChainSuccessWithRoot(t *testing.T) {
 	leafCert, _, _ := test.GenerateLeafCert(subject, oidcIssuer, rootCert, rootKey)
 
 	co := &CheckOpts{
-		CertEmail:      subject,
-		CertOidcIssuer: oidcIssuer,
-		IgnoreSCT:      true,
+		Identities: []Identity{{Subject: subject, Issuer: oidcIssuer}},
+		IgnoreSCT:  true,
 	}
 
 	_, err := ValidateAndUnpackCertWithChain(leafCert, []*x509.Certificate{rootCert}, co)
@@ -1005,9 +1198,8 @@ func TestValidateAndUnpackCertWithChainFailsWithoutChain(t *testing.T) {
 	leafCert, _, _ := test.GenerateLeafCert(subject, oidcIssuer, rootCert, rootKey)
 
 	co := &CheckOpts{
-		CertEmail:      subject,
-		CertOidcIssuer: oidcIssuer,
-		IgnoreSCT:      true,
+		Identities: []Identity{{Subject: subject, Issuer: oidcIssuer}},
+		IgnoreSCT:  true,
 	}
 
 	_, err := ValidateAndUnpackCertWithChain(leafCert, []*x509.Certificate{}, co)
@@ -1025,9 +1217,8 @@ func TestValidateAndUnpackCertWithChainFailsWithInvalidChain(t *testing.T) {
 	rootCertOther, _, _ := test.GenerateRootCa()
 
 	co := &CheckOpts{
-		CertEmail:      subject,
-		CertOidcIssuer: oidcIssuer,
-		IgnoreSCT:      true,
+		Identities: []Identity{{Subject: subject, Issuer: oidcIssuer}},
+		IgnoreSCT:  true,
 	}
 
 	_, err := ValidateAndUnpackCertWithChain(leafCert, []*x509.Certificate{rootCertOther}, co)
@@ -1127,6 +1318,7 @@ func TestValidateAndUnpackCertWithIdentities(t *testing.T) {
 			Identities: tc.identities,
 			IgnoreSCT:  true,
 		}
+
 		_, err := ValidateAndUnpackCert(leafCert, co)
 		if err == nil && tc.wantErrSubstring != "" {
 			t.Errorf("Expected error %s got none", tc.wantErrSubstring)
@@ -1150,6 +1342,36 @@ func TestValidateAndUnpackCertWithIdentities(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateAndUnpackCertWithIntermediatesSuccess(t *testing.T) {
+	subject := "email@email"
+	oidcIssuer := "https://accounts.google.com"
+
+	rootCert, rootKey, _ := test.GenerateRootCa()
+	subCert, subKey, _ := test.GenerateSubordinateCa(rootCert, rootKey)
+	leafCert, _, _ := test.GenerateLeafCert(subject, oidcIssuer, subCert, subKey)
+
+	rootPool := x509.NewCertPool()
+	rootPool.AddCert(rootCert)
+	subPool := x509.NewCertPool()
+	rootPool.AddCert(subCert)
+
+	co := &CheckOpts{
+		RootCerts:  rootPool,
+		IgnoreSCT:  true,
+		Identities: []Identity{{Subject: subject, Issuer: oidcIssuer}},
+	}
+
+	_, err := ValidateAndUnpackCertWithIntermediates(leafCert, co, subPool)
+	if err != nil {
+		t.Errorf("ValidateAndUnpackCertWithIntermediates expected no error, got err = %v", err)
+	}
+	err = CheckCertificatePolicy(leafCert, co)
+	if err != nil {
+		t.Errorf("CheckCertificatePolicy expected no error, got err = %v", err)
+	}
+}
+
 func TestCompareSigs(t *testing.T) {
 	// TODO(nsmith5): Add test cases for invalid signature, missing signature etc
 	tests := []struct {
@@ -1190,7 +1412,7 @@ func TestCompareSigs(t *testing.T) {
 func TestTrustedCertSuccess(t *testing.T) {
 	rootCert, rootKey, _ := test.GenerateRootCa()
 	subCert, subKey, _ := test.GenerateSubordinateCa(rootCert, rootKey)
-	leafCert, _, _ := test.GenerateLeafCert("subject", "oidc-issuer", subCert, subKey)
+	leafCert, _, _ := test.GenerateLeafCert("subject@mail.com", "oidc-issuer", subCert, subKey)
 
 	rootPool := x509.NewCertPool()
 	rootPool.AddCert(rootCert)
@@ -1211,7 +1433,7 @@ func TestTrustedCertSuccess(t *testing.T) {
 
 func TestTrustedCertSuccessNoIntermediates(t *testing.T) {
 	rootCert, rootKey, _ := test.GenerateRootCa()
-	leafCert, _, _ := test.GenerateLeafCert("subject", "oidc-issuer", rootCert, rootKey)
+	leafCert, _, _ := test.GenerateLeafCert("subject@mail.com", "oidc-issuer", rootCert, rootKey)
 
 	rootPool := x509.NewCertPool()
 	rootPool.AddCert(rootCert)
@@ -1226,7 +1448,7 @@ func TestTrustedCertSuccessNoIntermediates(t *testing.T) {
 // present, but a chain is built with only the leaf and root certificates.
 func TestTrustedCertSuccessChainFromRoot(t *testing.T) {
 	rootCert, rootKey, _ := test.GenerateRootCa()
-	leafCert, _, _ := test.GenerateLeafCert("subject", "oidc-issuer", rootCert, rootKey)
+	leafCert, _, _ := test.GenerateLeafCert("subject@mail.com", "oidc-issuer", rootCert, rootKey)
 	subCert, _, _ := test.GenerateSubordinateCa(rootCert, rootKey)
 
 	rootPool := x509.NewCertPool()
@@ -1237,46 +1459,6 @@ func TestTrustedCertSuccessChainFromRoot(t *testing.T) {
 	_, err := TrustedCert(leafCert, rootPool, subPool)
 	if err != nil {
 		t.Fatalf("expected no error verifying certificate, got %v", err)
-	}
-}
-
-func Test_getSubjectAltnernativeNames(t *testing.T) {
-	rootCert, rootKey, _ := test.GenerateRootCa()
-	subCert, subKey, _ := test.GenerateSubordinateCa(rootCert, rootKey)
-
-	// generate with OtherName, which will override other SANs
-	ext, err := cryptoutils.MarshalOtherNameSAN("subject-othername", true)
-	if err != nil {
-		t.Fatalf("error marshalling SANs: %v", err)
-	}
-	exts := []pkix.Extension{*ext}
-	leafCert, _, _ := test.GenerateLeafCert("unused", "oidc-issuer", subCert, subKey, exts...)
-
-	sans := getSubjectAlternateNames(leafCert)
-	if len(sans) != 1 {
-		t.Fatalf("expected 1 SAN field, got %d", len(sans))
-	}
-	if sans[0] != "subject-othername" {
-		t.Fatalf("unexpected OtherName SAN value")
-	}
-
-	// generate with all other SANs
-	leafCert, _, _ = test.GenerateLeafCertWithSubjectAlternateNames([]string{"subject-dns"}, []string{"subject-email"}, []net.IP{{1, 2, 3, 4}}, []*url.URL{{Path: "testURL"}}, "oidc-issuer", subCert, subKey)
-	sans = getSubjectAlternateNames(leafCert)
-	if len(sans) != 4 {
-		t.Fatalf("expected 1 SAN field, got %d", len(sans))
-	}
-	if sans[0] != "subject-dns" {
-		t.Fatalf("unexpected DNS SAN value")
-	}
-	if sans[1] != "subject-email" {
-		t.Fatalf("unexpected email SAN value")
-	}
-	if sans[2] != "1.2.3.4" {
-		t.Fatalf("unexpected IP SAN value")
-	}
-	if sans[3] != "testURL" {
-		t.Fatalf("unexpected URL SAN value")
 	}
 }
 
@@ -1300,13 +1482,15 @@ func TestVerifyRFC3161Timestamp(t *testing.T) {
 		t.Fatalf("unexpected error creating timestamp: %v", err)
 	}
 	rfc3161TS := bundle.RFC3161Timestamp{SignedRFC3161Timestamp: tsBytes}
-	chain, err := client.Timestamp.GetTimestampCertChain(nil)
+
+	certChainPEM, err := cryptoutils.MarshalCertificatesToPEM(client.CertChain)
 	if err != nil {
-		t.Fatalf("unexpected error getting timestamp chain: %v", err)
+		t.Fatalf("unexpected error marshalling cert chain: %v", err)
 	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM([]byte(chain.Payload)) {
-		t.Fatalf("error creating trust root pool")
+
+	leaves, intermediates, roots, err := tsa.SplitPEMCertificateChain(certChainPEM)
+	if err != nil {
+		t.Fatal("error splitting response into certificate chain")
 	}
 
 	ociSig, _ := static.NewSignature(payload,
@@ -1315,7 +1499,11 @@ func TestVerifyRFC3161Timestamp(t *testing.T) {
 		static.WithRFC3161Timestamp(&rfc3161TS))
 
 	// success, signing over signature
-	ts, err := VerifyRFC3161Timestamp(ociSig, pool)
+	ts, err := VerifyRFC3161Timestamp(ociSig, &CheckOpts{
+		TSACertificate:              leaves[0],
+		TSAIntermediateCertificates: intermediates,
+		TSARootCertificates:         roots,
+	})
 	if err != nil {
 		t.Fatalf("unexpected error verifying timestamp with signature: %v", err)
 	}
@@ -1333,7 +1521,11 @@ func TestVerifyRFC3161Timestamp(t *testing.T) {
 		"", /*signature*/
 		static.WithCertChain(pemLeaf, appendSlices([][]byte{pemRoot})),
 		static.WithRFC3161Timestamp(&rfc3161TS))
-	_, err = VerifyRFC3161Timestamp(ociSig, pool)
+	_, err = VerifyRFC3161Timestamp(ociSig, &CheckOpts{
+		TSACertificate:              leaves[0],
+		TSAIntermediateCertificates: intermediates,
+		TSARootCertificates:         roots,
+	})
 	if err != nil {
 		t.Fatalf("unexpected error verifying timestamp with payload: %v", err)
 	}
@@ -1343,7 +1535,11 @@ func TestVerifyRFC3161Timestamp(t *testing.T) {
 		string(signature),
 		static.WithCertChain(pemLeaf, appendSlices([][]byte{pemRoot})),
 		static.WithRFC3161Timestamp(&rfc3161TS))
-	_, err = VerifyRFC3161Timestamp(ociSig, pool)
+	_, err = VerifyRFC3161Timestamp(ociSig, &CheckOpts{
+		TSACertificate:              leaves[0],
+		TSAIntermediateCertificates: intermediates,
+		TSARootCertificates:         roots,
+	})
 	if err == nil || !strings.Contains(err.Error(), "base64 data") {
 		t.Fatalf("expected error verifying timestamp with raw signature, got: %v", err)
 	}
@@ -1360,8 +1556,126 @@ func TestVerifyRFC3161Timestamp(t *testing.T) {
 		base64.StdEncoding.EncodeToString(signature),
 		static.WithCertChain(pemLeaf, appendSlices([][]byte{pemRoot})),
 		static.WithRFC3161Timestamp(&rfc3161TS))
-	_, err = VerifyRFC3161Timestamp(ociSig, pool)
+	_, err = VerifyRFC3161Timestamp(ociSig, &CheckOpts{
+		TSACertificate:              leaves[0],
+		TSAIntermediateCertificates: intermediates,
+		TSARootCertificates:         roots,
+	})
 	if err == nil || !strings.Contains(err.Error(), "hashed messages don't match") {
 		t.Fatalf("expected error verifying mismatched signatures, got: %v", err)
 	}
+
+	// failure without root certificate
+	_, err = VerifyRFC3161Timestamp(ociSig, &CheckOpts{
+		TSACertificate:              leaves[0],
+		TSAIntermediateCertificates: intermediates,
+	})
+	if err == nil || !strings.Contains(err.Error(), "no TSA root certificate(s) provided to verify timestamp") {
+		t.Fatalf("expected error verifying without a root certificate, got: %v", err)
+	}
+}
+
+// Mock Rekor client
+type mockEntriesClient struct {
+	entries.ClientService
+	searchLogQueryFunc func(params *entries.SearchLogQueryParams, opts ...entries.ClientOption) (*entries.SearchLogQueryOK, error)
+}
+
+func (m *mockEntriesClient) SearchLogQuery(params *entries.SearchLogQueryParams, opts ...entries.ClientOption) (*entries.SearchLogQueryOK, error) {
+	if m.searchLogQueryFunc != nil {
+		return m.searchLogQueryFunc(params, opts...)
+	}
+	return nil, nil
+}
+
+// createRekorEntry creates a mock Rekor log entry.
+func createRekorEntry(ctx context.Context, t *testing.T, logID string, signer signature.Signer, payload, signature []byte, publicKey crypto.PublicKey) *models.LogEntry {
+	payloadHash := sha256.Sum256(payload)
+
+	publicKeyBytes, err := cryptoutils.MarshalPublicKeyToPEM(publicKey)
+	require.NoError(t, err)
+
+	artifactProperties := rtypes.ArtifactProperties{
+		ArtifactHash:   hex.EncodeToString(payloadHash[:]),
+		SignatureBytes: signature,
+		PublicKeyBytes: [][]byte{publicKeyBytes},
+		PKIFormat:      "x509",
+	}
+
+	// Create and canonicalize Rekor entry
+	entryProps, err := hashedrekord_v001.V001Entry{}.CreateFromArtifactProperties(ctx, artifactProperties)
+	require.NoError(t, err)
+
+	rekorEntry, err := rtypes.UnmarshalEntry(entryProps)
+	require.NoError(t, err)
+
+	canonicalEntry, err := rekorEntry.Canonicalize(ctx)
+	require.NoError(t, err)
+
+	// Create log entry
+	integratedTime := time.Now().Unix()
+	logEntry := models.LogEntryAnon{
+		Body:           base64.StdEncoding.EncodeToString(canonicalEntry),
+		IntegratedTime: swag.Int64(integratedTime),
+		LogIndex:       swag.Int64(0),
+		LogID:          swag.String(logID),
+	}
+
+	// Canonicalize the log entry and sign it
+	jsonLogEntry, err := json.Marshal(logEntry)
+	require.NoError(t, err)
+
+	canonicalPayload, err := jsoncanonicalizer.Transform(jsonLogEntry)
+	require.NoError(t, err)
+
+	signedEntryTimestamp, err := signer.SignMessage(bytes.NewReader(canonicalPayload))
+	require.NoError(t, err)
+
+	// Calculate leaf hash and add verification
+	entryUUID, err := ComputeLeafHash(&logEntry)
+	require.NoError(t, err)
+
+	logEntry.Verification = &models.LogEntryAnonVerification{
+		SignedEntryTimestamp: signedEntryTimestamp,
+		InclusionProof: &models.InclusionProof{
+			LogIndex: swag.Int64(0),
+			TreeSize: swag.Int64(1),
+			RootHash: swag.String(hex.EncodeToString(entryUUID)),
+			Hashes:   []string{},
+		},
+	}
+
+	// Return the constructed log entry
+	return &models.LogEntry{hex.EncodeToString(entryUUID): logEntry}
+}
+
+// generateSigner creates an ECDSA signer and public key.
+func generateSigner(t *testing.T) (signature.SignerVerifier, crypto.PublicKey) {
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err, "error generating private key")
+
+	signer, err := signature.LoadECDSASignerVerifier(privateKey, crypto.SHA256)
+	require.NoError(t, err, "error loading signer")
+
+	publicKey, err := signer.PublicKey()
+	require.NoError(t, err, "error getting public key")
+
+	return signer, publicKey
+}
+
+// generateBlobSignature signs a blob and returns the blob, its signature, and the base64-encoded signature.
+func generateBlobSignature(t *testing.T, signer signature.Signer) ([]byte, []byte, string) {
+	blob := []byte("foo")
+	blobSignature, err := signer.SignMessage(bytes.NewReader(blob))
+	require.NoError(t, err, "error signing blob")
+	blobSignatureBase64 := base64.StdEncoding.EncodeToString(blobSignature)
+	return blob, blobSignature, blobSignatureBase64
+}
+
+// calculateLogID generates a SHA-256 hash of the given public key and returns it as a hexadecimal string.
+func calculateLogID(t *testing.T, pub crypto.PublicKey) string {
+	pubBytes, err := x509.MarshalPKIXPublicKey(pub)
+	require.NoError(t, err, "error marshalling public key")
+	digest := sha256.Sum256(pubBytes)
+	return hex.EncodeToString(digest[:])
 }

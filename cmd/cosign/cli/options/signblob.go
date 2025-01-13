@@ -33,10 +33,16 @@ type SignBlobOptions struct {
 	OIDC                 OIDCOptions
 	Registry             RegistryOptions
 	BundlePath           string
+	NewBundleFormat      bool
 	SkipConfirmation     bool
 	TlogUpload           bool
+	TSAClientCACert      string
+	TSAClientCert        string
+	TSAClientKey         string
+	TSAServerName        string
 	TSAServerURL         string
 	RFC3161TimestampPath string
+	IssueCertificate     bool
 }
 
 var _ Interface = (*SignBlobOptions)(nil)
@@ -70,16 +76,35 @@ func (o *SignBlobOptions) AddFlags(cmd *cobra.Command) {
 		"write everything required to verify the blob to a FILE")
 	_ = cmd.Flags().SetAnnotation("bundle", cobra.BashCompFilenameExt, []string{})
 
+	// TODO: have this default to true as a breaking change
+	cmd.Flags().BoolVar(&o.NewBundleFormat, "new-bundle-format", false,
+		"output bundle in new format that contains all verification material")
+
 	cmd.Flags().BoolVarP(&o.SkipConfirmation, "yes", "y", false,
 		"skip confirmation prompts for non-destructive operations")
 
 	cmd.Flags().BoolVar(&o.TlogUpload, "tlog-upload", true,
 		"whether or not to upload to the tlog")
 
+	cmd.Flags().StringVar(&o.TSAClientCACert, "timestamp-client-cacert", "",
+		"path to the X.509 CA certificate file in PEM format to be used for the connection to the TSA Server")
+
+	cmd.Flags().StringVar(&o.TSAClientCert, "timestamp-client-cert", "",
+		"path to the X.509 certificate file in PEM format to be used for the connection to the TSA Server")
+
+	cmd.Flags().StringVar(&o.TSAClientKey, "timestamp-client-key", "",
+		"path to the X.509 private key file in PEM format to be used, together with the 'timestamp-client-cert' value, for the connection to the TSA Server")
+
+	cmd.Flags().StringVar(&o.TSAServerName, "timestamp-server-name", "",
+		"SAN name to use as the 'ServerName' tls.Config field to verify the mTLS connection to the TSA Server")
+
 	cmd.Flags().StringVar(&o.TSAServerURL, "timestamp-server-url", "",
-		"url to the Timestamp RFC3161 server, default none")
+		"url to the Timestamp RFC3161 server, default none. Must be the path to the API to request timestamp responses, e.g. https://freetsa.org/tsr")
 
 	cmd.Flags().StringVar(&o.RFC3161TimestampPath, "rfc3161-timestamp", "",
 		"write the RFC3161 timestamp to a file")
 	_ = cmd.Flags().SetAnnotation("rfc3161-timestamp", cobra.BashCompFilenameExt, []string{})
+
+	cmd.Flags().BoolVar(&o.IssueCertificate, "issue-certificate", false,
+		"issue a code signing certificate from Fulcio, even if a key is provided")
 }

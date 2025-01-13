@@ -19,7 +19,7 @@ import (
 	"crypto/x509"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
-	"github.com/sigstore/cosign/pkg/cosign/bundle"
+	"github.com/sigstore/cosign/v2/pkg/cosign/bundle"
 )
 
 // Signatures represents a set of signatures that are associated with a particular
@@ -41,6 +41,11 @@ type Signature interface {
 	// Payload fetches the opaque data that is being signed.
 	// This will always return data when there is no error.
 	Payload() ([]byte, error)
+
+	// Signature fetches the raw signature
+	// of the payload.  This will always return data when
+	// there is no error.
+	Signature() ([]byte, error)
 
 	// Base64Signature fetches the base64 encoded signature
 	// of the payload.  This will always return data when

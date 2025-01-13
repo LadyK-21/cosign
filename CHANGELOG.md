@@ -1,3 +1,738 @@
+# v2.4.2
+
+## Features
+
+* Detect if user supplied a valid protobuf bundle (#3931)
+* Add a log message if user doesn't provide `--trusted-root` (#3933)
+* Support mTLS towards container registry (#3922)
+* Add bundle create helper command (#3901)
+* Add trusted-root create helper command (#3876)
+
+## Bug Fixes
+
+* Fix copy --only for signatures + update/align docs (#3904)
+
+## Documentation
+
+* Remove usage.md from spec, point to client spec (#3918)
+* move reference from gcr to ghcr (#3897)
+
+## Contributors
+
+* Aditya Sirish
+* Bob Callaway
+* Carlos Tadeu Panato Junior
+* Cody Soyland
+* Colleen Murphy
+* Hayden B
+* Jussi Kukkonen
+* Marco Franssen
+* Søren Juul
+* Zach Steindler
+
+# v2.4.1
+
+v2.4.1 largely contains bug fixes and updates dependencies.
+
+## Features
+
+* Added fuzzing coverage to multiple packages
+
+## Bug Fixes
+* Fix bug in attest-blob when using a timestamp authority with new bundles (#3877)
+* fix: documentation link for installation guide (#3884)
+
+## Contributors
+
+* AdamKorcz
+* Bob Callaway
+* Carlos Tadeu Panato Junior
+* Hayden B
+* Hemil K
+* Sota Sugiura
+* Zach Steindler
+
+# v2.4.0
+
+v2.4.0 begins the modernization of the Cosign client, which includes:
+
+* Support for the newer Sigstore specification-compliant bundle format
+* Support for providing trust roots (e.g. Fulcio certificates, Rekor keys)
+  through a trust root file, instead of many different flags
+* Conformance test suite integration to verify signing and verification behavior
+
+In future updates, we'll include:
+
+* General support for the trust root file, instead of only when using the bundle
+  format during verification
+* Simplification of trust root flags and deprecation of the
+  Cosign-specific bundle format
+* Bundle support with container signing
+
+We have also moved nightly Cosign container builds to GHCR instead of GCR.
+
+## Features
+
+* Add new bundle support to `verify-blob` and `verify-blob-attestation` (#3796)
+* Adding protobuf bundle support to sign-blob and attest-blob (#3752)
+* Bump sigstore/sigstore to support `email_verified` as string or boolean (#3819)
+* Conformance testing for cosign (#3806)
+* move incremental builds per commit to GHCR instead of GCR (#3808)
+* Add support for recording creation timestamp for cosign attest (#3797)
+* Include SCT verification failure details in error message (#3799)
+
+## Contributors
+
+* Bob Callaway
+* Hayden B
+* Slavek Kabrda
+* Zach Steindler
+* Zsolt Horvath
+
+# v2.3.0
+
+## Features
+
+* Add PayloadProvider interface to decouple AttestationToPayloadJSON from oci.Signature interface (#3693)
+* add registry options to cosign save (#3645)
+* Add debug providers command. (#3728)
+* Make config layers in ociremote mountable (#3741)
+* upgrade to go1.22 (#3739)
+* adds tsa cert chain check for env var or tuf targets. (#3600)
+* add --ca-roots and --ca-intermediates flags to 'cosign verify' (#3464)
+* add handling of keyless verification for all verify commands (#3761)
+
+## Bug Fixes
+
+* fix: close attestationFile (#3679)
+* Set `bundleVerified` to true after Rekor verification (Resolves #3740)  (#3745)
+
+## Documentation
+
+* Document ImportKeyPair and LoadPrivateKey functions in pkg/cosign (#3776)
+
+## Testing
+
+* Refactor KMS E2E tests (#3684)
+* Remove sign\_blob\_test.sh test (#3707)
+* Remove KMS E2E test script (#3702)
+* Refactor insecure registry E2E tests (#3701)
+
+## Contributors
+
+* Billy Lynch
+* bminahan73
+* Bob Callaway
+* Carlos Tadeu Panato Junior
+* Cody Soyland
+* Colleen Murphy
+* Dmitry Savintsev
+* guangwu
+* Hayden B
+* Hector Fernandez
+* ian hundere
+* Jason Power
+* Jon Johnson
+* Max Lambrecht
+* Meeki1l
+
+# v2.2.4
+
+## Bug Fixes
+
+* Fixes for GHSA-88jx-383q-w4qc and GHSA-95pr-fxf5-86gv (#3661)
+* ErrNoSignaturesFound should be used when there is no signature attached to an image. (#3526)
+* fix semgrep issues for dgryski.semgrep-go ruleset (#3541)
+* Honor creation timestamp for signatures again (#3549)
+
+## Features
+
+* Adds Support for Fulcio Client Credentials Flow, and Argument to Set Flow Explicitly (#3578)
+
+## Documentation
+
+* add oci bundle spec (#3622)
+* Correct help text of triangulate cmd (#3551)
+* Correct help text of verify-attestation policy argument (#3527)
+* feat: add OVHcloud MPR registry tested with cosign (#3639)
+
+## Testing
+
+* Refactor e2e-tests.yml workflow (#3627)
+* Clean up and clarify e2e scripts (#3628)
+* Don't ignore transparency log in tests if possible (#3528)
+* Make E2E tests hermetic (#3499)
+* add e2e test for pkcs11 token signing (#3495)
+
+# v2.2.3
+
+## Bug Fixes
+
+* Fix race condition on verification with multiple signatures attached to image (#3486)
+* fix(clean): Fix clean cmd for private registries (#3446)
+* Fixed BYO PKI verification (#3427)
+
+## Features
+
+* Allow for option in cosign attest and attest-blob to upload attestation as supported in Rekor (#3466)
+* Add support for OpenVEX predicate type (#3405)
+
+## Documentation
+
+* Resolves #3088: `version` sub-command expected behaviour documentation and testing (#3447)
+* add examples for cosign attach signature cmd (#3468)
+
+## Misc
+
+* Remove CertSubject function (#3467)
+* Use local rekor and fulcio instances in e2e tests (#3478)
+
+## Contributors
+
+* aalsabag
+* Bob Callaway
+* Carlos Tadeu Panato Junior
+* Colleen Murphy
+* Hayden B
+* Mukuls77
+* Omri Bornstein
+* Puerco
+* vivek kumar sahu
+
+# v2.2.2
+
+v2.2.2 adds a new container with a shell, `gcr.io/projectsigstore/cosign:vx.y.z-dev`, in addition to the existing
+container `gcr.io/projectsigstore/cosign:vx.y.z` without a shell.
+
+For private deployments, we have also added an alias for `--insecure-skip-log`, `--private-infrastructure`.
+
+## Bug Fixes
+
+* chore(deps): bump github.com/sigstore/sigstore from 1.7.5 to 1.7.6 (#3411) which fixes a bug with using Azure KMS
+* Don't require CT log keys if using a key/sk (#3415)
+* Fix copy without any flag set (#3409)
+* Update cosign generate cmd to not include newline (#3393)
+* Fix idempotency error with signing (#3371)
+
+## Features
+
+* Add `--yes` flag `cosign import-key-pair` to skip the overwrite confirmation. (#3383)
+* Use the timeout flag value in verify* commands. (#3391)
+* add --private-infrastructure flag (#3369)
+
+## Container Updates
+
+* Bump builder image to use go1.21.4 and add new cosign image tags with shell  (#3373)
+
+## Documentation
+
+* Update SBOM\_SPEC.md (#3358)
+
+## Contributors
+
+* Carlos Tadeu Panato Junior
+* Dylan Richardson
+* Hayden B
+* Lily Sturmann
+* Nikos Fotiou
+* Yonghe Zhao
+
+# v2.2.1
+**Note: This release comes with a fix for CVE-2023-46737 described in this [Github Security Advisory](https://github.com/sigstore/cosign/security/advisories/GHSA-vfp6-jrw2-99g9). Please upgrade to this release ASAP**
+
+## Enhancements
+* feat: Support basic auth and bearer auth login to registry (#3310)
+* add support for ignoring certificates with pkcs11 (#3334)
+* Support ReplaceOp in Signatures (#3315)
+* feat: added ability to get image digest back via triangulate (#3255)
+* feat: add `--only` flag in `cosign copy` to copy sign, att & sbom (#3247)
+* feat: add support attaching a Rekor bundle to a container (#3246)
+* feat: add support outputting rekor response on signing (#3248)
+* feat: improve dockerfile verify subcommand (#3264)
+* Add guard flag for experimental OCI 1.1 verify. (#3272)
+* Deprecate SBOM attachments (#3256)
+* feat: dedent line in cosign copy doc (#3244)
+* feat: add platform flag to cosign copy command (#3234)
+* Add SLSA 1.0 attestation support to cosign. Closes #2860 (#3219)
+* attest: pass OCI remote opts to att resolver. (#3225)
+
+## Bug Fixes
+* Merge pull request from GHSA-vfp6-jrw2-99g9
+* fix: allow cosign download sbom when image is absent (#3245)
+* ci: add a OCI registry test for referrers support (#3253)
+* Fix ReplaceSignatures (#3292)
+* Stop using deprecated in_toto.ProvenanceStatement (#3243)
+* Fixes #3236, disable SCT checking for a cosign verification when usin… (#3237)
+* fix: update error in `SignedEntity` to be more descriptive (#3233)
+* Fail timestamp verification if no root is provided (#3224)
+
+
+## Documentation
+* Add some docs about verifying in an air-gapped environment (#3321)
+* Update CONTRIBUTING.md (#3268)
+* docs: improves the Contribution guidelines (#3257)
+* Remove security policy (#3230)
+
+
+## Others
+* Set go to min 1.21 and update dependencies  (#3327)
+* Update contact for code of conduct (#3266)
+* Update .ko.yaml (#3240)
+
+
+## Contributors
+* AdamKorcz
+* Andres Galante
+* Appu
+* Billy Lynch
+* Bob Callaway
+* Caleb Woodbine
+* Carlos Tadeu Panato Junior
+* Dylan Richardson
+* Gareth Healy
+* Hayden B
+* John Kjell
+* Jon Johnson
+* jonvnadelberg
+* Luiz Carvalho
+* Priya Wadhwa
+* Ramkumar Chinchani
+* Tosone
+* Ville Aikas
+* Vishal Choudhary
+* ziel
+
+# v2.2.0
+
+## Enhancements
+
+* switch to uploading DSSE types to rekor instead of intoto (#3113)
+* add 'cosign sign' command-line parameters for mTLS (#3052)
+* improve error messages around bundle != payload hash (#3146)
+* make VerifyImageAttestation function public (#3156)
+* Switch to cryptoutils function for SANS (#3185)
+* Handle HTTP_1_1_REQUIRED errors in github provider (#3172)
+
+## Bug Fixes
+
+* Fix nondeterminsitic timestamps (#3121)
+
+## Documentation
+
+* doc: Add example of sign-blob with key in env var (#3152)
+* add deprecation notice for cosign-releases GCS bucket (#3148)
+* update doc links (#3186)
+
+## Others
+
+* Upgrade to go1.21 (#3188)
+* Updates ci tests (#3142)
+* test using latest release of scaffolding (#3187)
+* ci: free up disk space for the gh runner (#3169)
+* update go-github to v53 (#3116)
+* call e2e test for cosign attach  (#3112)
+* bump build cross to use go1.20.6 and cosign image to 2.1.1 (#3108)
+
+## Contributors
+
+* Bob Callaway
+* Carlos Tadeu Panato Junior
+* Dmitry Savintsev
+* Hayden B
+* Hector Fernandez
+* Jason Hall
+* Jon Johnson
+* Jubril Oyetunji
+* Paulo Gomes
+* Priya Wadhwa
+* 张志强
+
+# v2.1.1
+
+## Bug Fixes
+* wait for the workers become available again to continue the execution (#3084)
+* fix help text when in a container (#3082)
+
+## Documentation
+* update changelog (#3080)
+* DNM: Add CHANGELOG for v2.1.0 (#3068)
+
+## Contributors
+
+* Carlos Tadeu Panato Junior
+* priyawadhwa
+
+# v2.1.0
+
+**Breaking Change: The predicate is now a required flag in the attest commands, set via the --type flag.**
+
+## Enhancements
+* Verify sigs and attestations in parallel (#3066)
+* Deep inspect attestations when filtering download (#3031)
+* refactor bundle validation code, add support for DSSE rekor type (#3016)
+* Allow overriding remote options (#3049)
+* feat: adds no cert found on sig exit code (#3038)
+* Make predicate a required flag in attest commands (#3033)
+* Added support for attaching Time stamp authority Response in attach command (#3001)
+* Add `sign --sign-container-identity` CLI (#2984)
+* Feature: Allow cosign to sign digests before they are uploaded. (#2959)
+* accepts `attachment-tag-prefix` for `cosign copy` (#3014)
+* Feature: adds '--allow-insecure-registry' for cosign load (#3000)
+* download attestation: support --platform flag (#2980)
+* Cleanup: Add `Digest` to the `SignedEntity` interface. (#2960)
+* verify command: support keyless verification using only a provided certificate chain with non-fulcio roots (#2845)
+* verify: use workers to limit the paralellism when verifying images with --max-workers flag (#3069)
+
+## Bug Fixes
+* Fix pkg/cosign/errors (#3050)
+* fix: update doc to refer to github-actions oidc provider (#3040)
+* fix: prefer GitHub OIDC provider if enabled (#3044)
+* Fix --sig-only in cosign copy (#3074)
+
+## Documentation
+* Fix links to sigstore/docs in markdown files (#3064)
+* Update release readme (#2942)
+
+## Contributors
+
+**Thank you to our contributors!**
+* Bob Callaway
+* Carlos Tadeu Panato Junior
+* Chok Yip Lau
+* Chris Burns
+* Dmitry Savintsev
+* Enyinna Ochulor
+* Hayden B
+* Hector Fernandez
+* Jakub Hrozek
+* Jason Hall
+* Jon Johnson
+* Luiz Carvalho
+* Matt Moore
+* Mritunjay Kumar Sharma
+* Mukuls77
+* Ramkumar Chinchani
+* Sascha Grunert
+* Yolanda Robla Mota
+* priyawadhwa
+
+# v2.0.2
+
+## Enhancements
+
+* Update sigstore/sigstore to v1.6.2 to pick up TUF CDN change (#2891)
+* feat: Make cosign copy faster (#2901)
+* remove sget (#2885)
+* Require a payload to be provided with a signature (#2785)
+
+## Bug Fixes
+
+* cmd: Change error message from KeyParseError to PubKeyParseError for verify-blob. (#2876)
+* Use `SOURCE_DATE_EPOCH` for OCI CreatedAt times (#2878)
+
+## Documentation
+
+* Remove experimental warning from Fulcio flags (#2923)
+* add missing oidc provider (#2922)
+* Add zot as a supported registry (#2920)
+* deprecates `kms_support` docs (#2900)
+* chore(docs) deprecate note for usage docs (#2906)
+* adds note of deprecation for examples.md docs (#2899)
+
+## Contributors
+
+* Carlos Tadeu Panato Junior
+* Chris Burns
+* Dmitry Savintsev
+* eiffel-fl
+* Hayden B
+* Hector Fernandez
+* Jon Johnson
+* Miloslav Trmač
+* priyawadhwa
+* Ramkumar Chinchani
+
+# v2.0.1
+
+## Enhancements
+
+* Add environment variable token provider (#2864)
+* Remove cosign policy command (#2846)
+* Allow customising 'go' executable with GOEXE var (#2841)
+* Consistent tlog warnings during verification (#2840)
+* Add riscv64 arch (#2821)
+* Default generated PEM labels to SIGSTORE (#2735)
+* Update privacy statement and confirmation (#2797)
+* Add exit codes for verify errors (#2766)
+* Add Buildkite provider (#2779)
+* verify-blob-attestation: Loosen arg requirements if --check-claims=false (#2746)
+
+## Bug Fixes
+
+* PKCS11 sessions are now opened read only (#2853)
+* Makefile: date format of log should not show signatures (#2835)
+* Add missing flags to cosign verify dockerfile/manifest (#2830)
+* Add a warning to remember how to configure a custom Gitlab host (#2816)
+* Remove tag warning message from save/copy commands (#2799)
+* Mark keyless pem files with b64 (#2671)
+
+## Contributors
+
+* Aleksandr Razumov
+* Batuhan Apaydın
+* Billy Lynch
+* Carlos Tadeu Panato Junior
+* Chris Burns
+* Derek Burdick
+* Dmitry Savintsev
+* favonia
+* Hayden B
+* Hector Fernandez
+* Ivana Atanasova
+* joe miller
+* Luiz Carvalho
+* Paolo Mainardi
+* priyawadhwa
+* Radoslav Dimitrov
+* Steve Winslow
+* Vincent Batts
+* Zack Newman
+
+# v2.0.0
+This is the official 2.0.0 release of cosign!
+There are many new features and breaking changes from version 1.x, for a full explanation please read the Cosign 2.0 [blog post](https://blog.sigstore.dev/).
+
+## Breaking Changes
+* `COSIGN_EXPERIMENTAL=1` is no longer required to have identity-based ("keyless") signing and transparency.
+* By default, artifact signatures will be uploaded to Rekor, for both key-based and identity-based signing. To not upload to Rekor, include `--tlog-upload=false`.
+  * You must also include `--insecure-ignore-tlog=true` when verifying an artifact that was not uploaded to Rekor.
+  * Examples of when you may want to skip uploading to the transparency log are if you have a private Sigstore deployment that does not use transparency or a private artifact.
+  * We strongly encourage all other use-cases to upload artifact signatures to Rekor. Transparency is a critical component of supply chain security, to allow artifact maintainers and consumers to monitor a public log for their artifacts and signing identities.
+* Verification now requires identity flags, `--certificate-identity` and `--certificate-oidc-issuer`. Like verifying a signature with a public key, it's critical to specify who you trust to generate a signature for identity-based signing. See sigstore/cosign#2056 for more discussion on this change.
+* --certificate-email has been removed. Use --certificate-identity, which supports not only email verification but also any identity specified in a certificate, including SPIFFE, GitHub Actions, or service account identities.
+* Cosign no longer supports providing a certificate that does not conform to the Fulcio certificate profile, which includes setting the SubjectAlternativeName and OIDC Issuer OID. To verify with a non-conformant certificate, extract the public key from the certificate and verify with `cosign verify --key <key.pem>`. We are actively working on more support for custom certificates for those who want to bring their existing PKI.
+* Signing OCI images by tag prints a warning and is strongly discouraged, e.g. `cosign sign container.registry.io/foo:tag`. This is considered insecure since tags are mutable. If you want to specify a particular image, you are recommended to do so by digest.
+* SCT verification, a proof of inclusion in a certificate transparency log, is now on by default for verifying Fulcio certificates. For private deployments without certificate transparency, use `--insecure-ignore-sct=true` to skip this check.
+* DSSE support in verify-blob has been removed. You can now verify attestations using verify-blob-attestation.
+* Environment variable `SIGSTORE_TRUST_REKOR_API_PUBLIC_KEY` has been removed. For private deployments, if you would like to set the Rekor public key to verify transparency log entries, use either a TUF setup or set `SIGSTORE_REKOR_PUBLIC_KEY` with the PEM of the custom Rekor public key..
+* verify-blob no longer searches for a certificate. You must provide one with either `--certificate` or `--bundle`.
+* `cosign attest --type {custom|vuln}` (and `cosign verify-attestation`) will now use the RFC 3986 compliant URIs, adding https://, so that these predicate types are compliant with the in-toto specification.
+* The CosignPredicate envelope that wraps the predicates of SPDX and CycloneDX attestations has been removed, which was a violation of the schema specified via the predicateType field (more information).
+* `--force` has been removed. To skip any prompts, use `--yes`.
+
+## Improvements
+* Blob attestation and verification is now supported with cosign attest-blob and cosign verify-blob-attestation.
+* You can now set flags via environment variables, for example instead of `--certificate-identity=email`, you can set an environment variable for `COSIGN_CERTIFICATE_IDENTITY=email`.
+* `--offline=true` removes the fallback to the Rekor log when verifying an artifact. Previously, if you did not provide a bundle (a persisted response from Rekor), Cosign would fallback to querying Rekor. You can now skip this fallback for offline environments. Note that if the bundle fails to verify, Cosign will not fallback and will fail early.
+* A Fulcio certificate can now be issued for self-managed keys by providing `--issue-certificate=true` with a key, `--key`, or security key, `--sk`. This is useful when adopting Sigstore incrementally.
+* Experimental support for trusted timestamping has been added. Timestamping leverages a third party to provide the timestamp that will be used to verify short-lived Fulcio certificates, which distributes trust. We will be writing more about this in an upcoming blog post!
+  * To use a timestamp when signing a container, use` cosign sign --timestamp-server-url=<url> <container>`, such as https://freetsa.org/tsr, and to verify, `cosign verify --timestamp-certificate-chain=<path-to-PEM-encodeded-chain> <other flags> <artifact>`.
+  * To use a timestamp when signing a blob, use `cosign sign-blob --timestamp-server-url=<url> --rfc3161-timestamp=<output-path> --bundle=<output-path> <blob>`, and to verify, `cosign verify-blob --rfc3161-timestamp=<output-path> --timestamp-certificate-chain=<path-to-PEM-encoded-chain> --bundle=<output-path> <other flags> <blob>`.
+
+For specific PRs representing enhancements, bug fixes, documentation, and breaking changes, please see the sections below for prereleases v2.0.0-rc.0, v2.0.0-rc.1, v2.0.0-rc.2, and v2.0.0-rc.3.
+
+### Thanks to all contributors!
+
+* Anish Shah
+* Arnaud J Le Hors
+* Arthur Lutz
+* Batuhan Apaydın
+* Bob Callaway
+* Carlos Tadeu Panato Junior
+* Chris Burns
+* Christian Loos
+* Emmanuel T Odeke
+* Hayden B
+* Hector Fernandez
+* Huang Huang
+* Jan Wozniak
+* Josh Dolitsky
+* Josh Wolf
+* Kenny Leung
+* Marko Mudrinić
+* Matt Moore
+* Matthias Glastra
+* Miloslav Trmač
+* Mukuls77
+* Priya Wadhwa
+* Puerco
+* Stefan Zhelyazkov
+* Tim Seagren
+* Tom Meadows
+* Ville Aikas
+* Zack Newman
+* asraa
+* kpk47
+* priyawadhwa
+
+
+# v2.0.0-rc.3
+_Note: this is a prerelease for Cosign 2.0! Feel free to try it out, but know there are many breaking changes from 1.0 and the prereleases may continue to change._
+
+## Enhancements
+* Support non-Sigstore TSA requests (#2708)
+* Add COSIGN_OCI_EXPERIMENTAL, push .sig/.sbom using OCI 1.1+ digest tag (#2684)
+* Output certificate in bundle when entry is not uploaded to Rekor (#2715)
+* attach signature and attach sbom must use STDIN to upload raw string (#2637)
+
+## Bug Fixes
+* Fix: Add missing schemes to cosign predicate types. (#2717)
+* Fix: Drop the `CosignPredicate` wrapper around SBOM attestations. (#2718)
+
+## Documentation
+* Adds deprecation note for keyless docs (#2716)
+
+
+# v2.0.0-rc.2
+_Note: this is a prerelease for Cosign 2.0! Feel free to try it out, but know there are many breaking changes from 1.0 and the prereleases may continue to change._
+
+## Enhancements
+* add generate-key-pair GitHub Enterprise server support (#2676)
+* add in format string for warning (#2699)
+* Support for fetching Fulcio certs with self-managed key (#2532)
+* 2476 predicate type download (#2484)
+* Upgrade to go1.20 (#2689)
+
+## Bug Fixes
+* Fix prompts with Windows line endings (#2674)
+
+## Documentation
+
+* docs(README): verify example failing on latest (#2694)
+
+## Contributors
+* Anish Shah
+* Arthur Lutz
+* Carlos Tadeu Panato Junior
+* Christian Loos
+* Tim Seagren
+* Zack Newman
+* priyawadhwa
+
+# v2.0.0-rc.1
+_Note: this is a prerelease for Cosign 2.0! Feel free to try it out, but know there are many breaking changes from 1.0 and the prereleases may continue to change._
+
+Critical breaking changes include:
+* Certificate issuer and subject are now required on `cosign verify`
+
+## Breaking Changes
+* insecure-skip-tlog-verify: rename and adapt the cert expiration check (#2620)
+* Deprecate --certificate-email flag. Make --certificate-identity and -… (#2411)
+
+## Enhancements
+* Add warning to use digest instead of tags to other cosign commands (#2650)
+* Fix up UI messages (#2629)
+* Remove hardcoded Fulcio from output (#2621)
+* Fix missing privacy statement, print in multiple locations (#2622)
+* feat: allows custom key names for import-key-pair (#2587)
+* feat: support keyless verification for verify-blob-attestation (#2525)
+* attest-blob: add functionality for keyless signing (#2515)
+* Rego: add support for custom error/warning messages when evaluating rego rules (#2577)
+* feat: add debug information to cert validation error (#2579)
+
+## Bug Fixes
+* fix: panic with unsigned local image (#2656)
+* Make sure a cert passed in via --cert matches the bundle cert (#2652)
+* fix: fix github oidc post submit test (#2594)
+* fix: add enhanced error messages for failing verification with TUF targets (#2589)
+
+## Contributors
+* Carlos Tadeu Panato Junior
+* Chris Burns
+* Hayden B
+* Hector Fernandez
+* Huang Huang
+* Kenny Leung
+* Priya Wadhwa
+* Stefan Zhelyazkov
+* Ville Aikas
+* Zack Newman
+* asraa
+* dependabot[bot]
+* kpk47
+* priyawadhwa
+
+# v2.0.0-rc.0
+
+_Note: this is a prerelease for Cosign 2.0! Feel free to try it out, but know there are many breaking changes from 1.0 and the prereleases may continue to change._
+
+Critical breaking changes include:
+* Removing the COSIGN_EXPERIMENTAL environment variable, so the default signing method is now keyless signing with Fulcio
+* By default Cosign will now always upload to Rekor, this can be toggled with the `--tlog-upload` flag (defaults to true)
+
+## Breaking Changes
+* Breaking change: Change SCT verification behavior to default to enforcement (#2400)
+* Breaking change: remove --force flag from sign and attest and rely on --yes flag to skip confirmation (#2399)
+* Breaking change: replace --no-tlog-upload flag with --tlog-upload flag (#2397)
+
+## Enhancements
+* Change go module name to github.com/sigstore/cosign/v2 for Cosign 2.0 (#2544)
+* Allow users to pass in a path for the --identity-token flag (#2538)
+* Breaking change: Respect tlog-upload=false, default to true (#2505)
+* Support outputing a certificate without uploading to the tlog (#2506)
+* Attestation/Blob signing and verification using a RFC3161 time-stamping server (#2464)
+* respect tlog-upload flag with TSA (#2474)
+* Better feedback if specifying incompatible argument on `cosign sign --attachment` (#2449)
+* Support TSA and Rekor verifications (#2463)
+* add support for tsa signing and verification of images (#2460)
+* cosign policy sign: remove experimental flag and make keyless signing default (#2459)
+* Remove experimental mode from cosign attest and verify-attestation (#2458)
+* Remove experimental mode from sign-blob and verify-blob (#2457)
+* Add --offline flag to force offline verification (#2427)
+* Air gap support (#2299)
+* Remove experimental flag from cosign sign and cosign verify (#2387)
+* verify: remove SIGSTORE_TRUST_REKOR_API_PUBLIC_KEY test env var for using a key from rekor's API  (#2362)
+
+## Bug Fixes
+* Fix the file existence check. (#2552)
+* Fix timestamp verification, add verify-blob tests (#2527)
+* fix(verify): Consolidate certificate expiry logic (#2504)
+* Updates to Timestamp signing and verification (#2499)
+* fix: removes attestation payload from attest-blob's output & no base64 encoding (#2498)
+* Fix path for e2e-tests badge (#2490)
+* Fix spdx json media type (#2479)
+* fix sct verificaction (#2426)
+
+## Others
+* update builder image that uses go 1.19.4 (#2520)
+
+## Contributors
+* Anish Shah
+* Arnaud J Le Hors
+* Batuhan Apaydın
+* Bob Callaway
+* Carlos Tadeu Panato Junior
+* Emmanuel T Odeke
+* Hayden B
+* Hector Fernandez
+* Jan Wozniak
+* Matthias Glastra
+* Miloslav Trmač
+* Puerco
+* Tom Meadows
+* Ville Aikas
+* Zack Newman
+* asraa
+* priyawadhwa
+
+# v1.13.6
+
+_Note: v1.13.3, .4, and .5 were skipped due to issues in the release pipeline_
+
+This release backports support for the latest TUF specification. We encourage users to upgrade to Cosign v2.
+
+## Updates
+* V1 go tuf update (#3598)
+* Update cloud build script to latest for v1.13.x (#3615)
+
+# v1.13.2
+
+This release backports a security fix. We encourage users to upgrade to Cosign v2.
+
+## Updates
+* [release-1.13] update builder image that uses go 1.19.4 (#2521)
+* Backport GHSA-vfp6-jrw2-99g9 in (#3364)
+
 # v1.13.1
 
 ## Enhancements
@@ -59,7 +794,7 @@
 # v1.12.1
 
 > # Highlights
-> * Pulls Fulcio root and intermediate when `--certificate-chain` is not passed into `verify-blob`. The v1.12.0 release introduced a regression: when `COSIGN_EXPERIMENTAL` was not set, cosign `verify-blob` would check a` --certificate` (without a `--certificate-chain` provided) against the operating system root CA bundle. In this release, Cosign checks the certificate against Fulcio's CA root instead (restoring the earlier behavior).
+> * Pulls Fulcio root and intermediate when `--certificate-chain` is not passed into `verify-blob`. The v1.12.0 release introduced a regression: when `COSIGN_EXPERIMENTAL` was not set, cosign `verify-blob` would check a `--certificate` (without a `--certificate-chain` provided) against the operating system root CA bundle. In this release, Cosign checks the certificate against Fulcio's CA root instead (restoring the earlier behavior).
 
 ## Bug Fixes
 

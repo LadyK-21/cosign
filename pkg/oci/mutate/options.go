@@ -17,8 +17,8 @@ package mutate
 
 import (
 	"github.com/google/go-containerregistry/pkg/v1/types"
-	"github.com/sigstore/cosign/pkg/cosign/bundle"
-	"github.com/sigstore/cosign/pkg/oci"
+	"github.com/sigstore/cosign/v2/pkg/cosign/bundle"
+	"github.com/sigstore/cosign/v2/pkg/oci"
 )
 
 // DupeDetector scans a list of signatures looking for a duplicate.
@@ -33,8 +33,9 @@ type ReplaceOp interface {
 type SignOption func(*signOpts)
 
 type signOpts struct {
-	dd DupeDetector
-	ro ReplaceOp
+	dd  DupeDetector
+	ro  ReplaceOp
+	rct bool
 }
 
 func makeSignOpts(opts ...SignOption) *signOpts {
@@ -56,6 +57,12 @@ func WithDupeDetector(dd DupeDetector) SignOption {
 func WithReplaceOp(ro ReplaceOp) SignOption {
 	return func(so *signOpts) {
 		so.ro = ro
+	}
+}
+
+func WithRecordCreationTimestamp(rct bool) SignOption {
+	return func(so *signOpts) {
+		so.rct = rct
 	}
 }
 

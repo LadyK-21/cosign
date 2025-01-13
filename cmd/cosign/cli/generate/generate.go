@@ -17,12 +17,11 @@ package generate
 
 import (
 	"context"
-	"fmt"
 	"io"
 
 	"github.com/google/go-containerregistry/pkg/name"
-	"github.com/sigstore/cosign/cmd/cosign/cli/options"
-	ociremote "github.com/sigstore/cosign/pkg/oci/remote"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/options"
+	ociremote "github.com/sigstore/cosign/v2/pkg/oci/remote"
 	"github.com/sigstore/sigstore/pkg/signature/payload"
 )
 
@@ -49,6 +48,6 @@ func GenerateCmd(ctx context.Context, regOpts options.RegistryOptions, imageRef 
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(w, string(json))
+	w.Write(json)
 	return nil
 }

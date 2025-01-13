@@ -18,24 +18,31 @@ package fulcioverifier
 import (
 	"context"
 	"fmt"
-	"os"
 
-	"github.com/sigstore/cosign/cmd/cosign/cli/fulcio"
-	"github.com/sigstore/cosign/cmd/cosign/cli/fulcio/fulcioverifier/ctl"
-	"github.com/sigstore/cosign/cmd/cosign/cli/options"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/fulcio"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/options"
+	"github.com/sigstore/cosign/v2/internal/ui"
+	"github.com/sigstore/cosign/v2/pkg/cosign"
+	"github.com/sigstore/sigstore/pkg/signature"
 )
 
-func NewSigner(ctx context.Context, ko options.KeyOpts) (*fulcio.Signer, error) {
-	fs, err := fulcio.NewSigner(ctx, ko)
+func NewSigner(ctx context.Context, ko options.KeyOpts, signer signature.SignerVerifier) (*fulcio.Signer, error) {
+	fs, err := fulcio.NewSigner(ctx, ko, signer)
 	if err != nil {
 		return nil, err
 	}
 
+	// Grab the PublicKeys for the CTFE, either from tuf or env.
+	pubKeys, err := cosign.GetCTLogPubs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("getting CTFE public keys: %w", err)
+	}
+
 	// verify the sct
-	if err := ctl.VerifySCT(ctx, fs.Cert, fs.Chain, fs.SCT); err != nil {
+	if err := cosign.VerifySCT(ctx, fs.Cert, fs.Chain, fs.SCT, pubKeys); err != nil {
 		return nil, fmt.Errorf("verifying SCT: %w", err)
 	}
-	fmt.Fprintln(os.Stderr, "Successfully verified SCT...")
+	ui.Infof(ctx, "Successfully verified SCT...")
 
 	return fs, nil
 }

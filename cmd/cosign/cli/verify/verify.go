@@ -29,17 +29,18 @@ import (
 	"path/filepath"
 
 	"github.com/google/go-containerregistry/pkg/name"
-
-	"github.com/sigstore/cosign/cmd/cosign/cli/fulcio"
-	"github.com/sigstore/cosign/cmd/cosign/cli/options"
-	"github.com/sigstore/cosign/cmd/cosign/cli/rekor"
-	"github.com/sigstore/cosign/cmd/cosign/cli/sign"
-	"github.com/sigstore/cosign/pkg/blob"
-	"github.com/sigstore/cosign/pkg/cosign"
-	"github.com/sigstore/cosign/pkg/cosign/pivkey"
-	"github.com/sigstore/cosign/pkg/cosign/pkcs11key"
-	"github.com/sigstore/cosign/pkg/oci"
-	sigs "github.com/sigstore/cosign/pkg/signature"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/fulcio"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/options"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/rekor"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/sign"
+	cosignError "github.com/sigstore/cosign/v2/cmd/cosign/errors"
+	"github.com/sigstore/cosign/v2/internal/ui"
+	"github.com/sigstore/cosign/v2/pkg/blob"
+	"github.com/sigstore/cosign/v2/pkg/cosign"
+	"github.com/sigstore/cosign/v2/pkg/cosign/pivkey"
+	"github.com/sigstore/cosign/v2/pkg/cosign/pkcs11key"
+	"github.com/sigstore/cosign/v2/pkg/oci"
+	sigs "github.com/sigstore/cosign/v2/pkg/signature"
 	"github.com/sigstore/sigstore/pkg/cryptoutils"
 	"github.com/sigstore/sigstore/pkg/signature"
 	"github.com/sigstore/sigstore/pkg/signature/payload"
@@ -49,17 +50,17 @@ import (
 // nolint
 type VerifyCommand struct {
 	options.RegistryOptions
+	options.CertVerifyOptions
 	CheckClaims                  bool
 	KeyRef                       string
 	CertRef                      string
-	CertEmail                    string
-	CertIdentity                 string
-	CertOidcIssuer               string
 	CertGithubWorkflowTrigger    string
 	CertGithubWorkflowSha        string
 	CertGithubWorkflowName       string
 	CertGithubWorkflowRepository string
 	CertGithubWorkflowRef        string
+	CAIntermediates              string
+	CARoots                      string
 	CertChain                    string
 	CertOidcProvider             string
 	IgnoreSCT                    bool
@@ -71,12 +72,16 @@ type VerifyCommand struct {
 	Attachment                   string
 	Annotations                  sigs.AnnotationsMap
 	SignatureRef                 string
+	PayloadRef                   string
 	HashAlgorithm                crypto.Hash
 	LocalImage                   bool
 	NameOptions                  []name.Option
 	Offline                      bool
 	TSACertChainPath             string
-	SkipTlogVerify               bool
+	UseSignedTimestamps          bool
+	IgnoreTlog                   bool
+	MaxWorkers                   int
+	ExperimentalOCI11            bool
 }
 
 // Exec runs the verification command
@@ -86,7 +91,9 @@ func (c *VerifyCommand) Exec(ctx context.Context, images []string) (err error) {
 	}
 
 	switch c.Attachment {
-	case "sbom", "":
+	case "sbom":
+		fmt.Fprintln(os.Stderr, options.SBOMAttachmentDeprecation)
+	case "":
 		break
 	default:
 		return flag.ErrHelp
@@ -97,6 +104,14 @@ func (c *VerifyCommand) Exec(ctx context.Context, images []string) (err error) {
 		c.HashAlgorithm = crypto.SHA256
 	}
 
+	var identities []cosign.Identity
+	if c.KeyRef == "" {
+		identities, err = c.Identities()
+		if err != nil {
+			return err
+		}
+	}
+
 	ociremoteOpts, err := c.ClientOpts(ctx)
 	if err != nil {
 		return fmt.Errorf("constructing client options: %w", err)
@@ -105,9 +120,6 @@ func (c *VerifyCommand) Exec(ctx context.Context, images []string) (err error) {
 	co := &cosign.CheckOpts{
 		Annotations:                  c.Annotations.Annotations,
 		RegistryClientOpts:           ociremoteOpts,
-		CertEmail:                    c.CertEmail,
-		CertIdentity:                 c.CertIdentity,
-		CertOidcIssuer:               c.CertOidcIssuer,
 		CertGithubWorkflowTrigger:    c.CertGithubWorkflowTrigger,
 		CertGithubWorkflowSha:        c.CertGithubWorkflowSha,
 		CertGithubWorkflowName:       c.CertGithubWorkflowName,
@@ -115,34 +127,30 @@ func (c *VerifyCommand) Exec(ctx context.Context, images []string) (err error) {
 		CertGithubWorkflowRef:        c.CertGithubWorkflowRef,
 		IgnoreSCT:                    c.IgnoreSCT,
 		SignatureRef:                 c.SignatureRef,
+		PayloadRef:                   c.PayloadRef,
+		Identities:                   identities,
 		Offline:                      c.Offline,
-		SkipTlogVerify:               c.SkipTlogVerify,
+		IgnoreTlog:                   c.IgnoreTlog,
+		MaxWorkers:                   c.MaxWorkers,
+		ExperimentalOCI11:            c.ExperimentalOCI11,
+		UseSignedTimestamps:          c.TSACertChainPath != "" || c.UseSignedTimestamps,
 	}
 	if c.CheckClaims {
 		co.ClaimVerifier = cosign.SimpleClaimVerifier
 	}
 
-	if c.TSACertChainPath != "" {
-		_, err := os.Stat(c.TSACertChainPath)
+	// If we are using signed timestamps, we need to load the TSA certificates
+	if co.UseSignedTimestamps {
+		tsaCertificates, err := cosign.GetTSACerts(ctx, c.TSACertChainPath, cosign.GetTufTargets)
 		if err != nil {
-			return fmt.Errorf("unable to open timestamp certificate chain file: %w", err)
+			return fmt.Errorf("unable to load TSA certificates: %w", err)
 		}
-		// TODO: Add support for TUF certificates.
-		pemBytes, err := os.ReadFile(filepath.Clean(c.TSACertChainPath))
-		if err != nil {
-			return fmt.Errorf("error reading certification chain path file: %w", err)
-		}
-		// TODO: Update this logic once https://github.com/sigstore/timestamp-authority/issues/121 gets merged.
-		// This relies on untrusted leaf certificate.
-		tsaCertPool := x509.NewCertPool()
-		ok := tsaCertPool.AppendCertsFromPEM(pemBytes)
-		if !ok {
-			return fmt.Errorf("error parsing response into Timestamp while appending certs from PEM")
-		}
-		co.TSACerts = tsaCertPool
+		co.TSACertificate = tsaCertificates.LeafCert
+		co.TSARootCertificates = tsaCertificates.RootCert
+		co.TSAIntermediateCertificates = tsaCertificates.IntermediateCerts
 	}
 
-	if !c.SkipTlogVerify {
+	if !c.IgnoreTlog {
 		if c.RekorURL != "" {
 			rekorClient, err := rekor.NewClient(c.RekorURL)
 			if err != nil {
@@ -158,19 +166,21 @@ func (c *VerifyCommand) Exec(ctx context.Context, images []string) (err error) {
 		}
 	}
 	if keylessVerification(c.KeyRef, c.Sk) {
-		// This performs an online fetch of the Fulcio roots. This is needed
-		// for verifying keyless certificates (both online and offline).
-		co.RootCerts, err = fulcio.GetRoots()
-		if err != nil {
-			return fmt.Errorf("getting Fulcio roots: %w", err)
-		}
-		co.IntermediateCerts, err = fulcio.GetIntermediates()
-		if err != nil {
-			return fmt.Errorf("getting Fulcio intermediates: %w", err)
+		if err := loadCertsKeylessVerification(c.CertChain, c.CARoots, c.CAIntermediates, co); err != nil {
+			return err
 		}
 	}
+
 	keyRef := c.KeyRef
 	certRef := c.CertRef
+
+	// Ignore Signed Certificate Timestamp if the flag is set or a key is provided
+	if shouldVerifySCT(c.IgnoreSCT, c.KeyRef, c.Sk) {
+		co.CTLogPubKeys, err = cosign.GetCTLogPubs(ctx)
+		if err != nil {
+			return fmt.Errorf("getting ctlog public keys: %w", err)
+		}
+	}
 
 	// Keys are optional!
 	var pubKey signature.Verifier
@@ -199,8 +209,9 @@ func (c *VerifyCommand) Exec(ctx context.Context, images []string) (err error) {
 		if err != nil {
 			return err
 		}
-		if c.CertChain == "" {
-			// If no certChain is passed, the Fulcio root certificate will be used
+		switch {
+		case c.CertChain == "" && co.RootCerts == nil:
+			// If no certChain and no CARoots are passed, the Fulcio root certificate will be used
 			co.RootCerts, err = fulcio.GetRoots()
 			if err != nil {
 				return fmt.Errorf("getting Fulcio roots: %w", err)
@@ -213,7 +224,7 @@ func (c *VerifyCommand) Exec(ctx context.Context, images []string) (err error) {
 			if err != nil {
 				return err
 			}
-		} else {
+		case c.CertChain != "":
 			// Verify certificate with chain
 			chain, err := loadCertChainFromFileOrURL(c.CertChain)
 			if err != nil {
@@ -223,7 +234,16 @@ func (c *VerifyCommand) Exec(ctx context.Context, images []string) (err error) {
 			if err != nil {
 				return err
 			}
+		case co.RootCerts != nil:
+			// Verify certificate with root (and if given, intermediate) certificate
+			pubKey, err = cosign.ValidateAndUnpackCert(cert, co)
+			if err != nil {
+				return err
+			}
+		default:
+			return errors.New("no certificate chain provided to verify certificate")
 		}
+
 		if c.SCTRef != "" {
 			sct, err := os.ReadFile(filepath.Clean(c.SCTRef))
 			if err != nil {
@@ -231,12 +251,16 @@ func (c *VerifyCommand) Exec(ctx context.Context, images []string) (err error) {
 			}
 			co.SCT = sct
 		}
+	default:
+		// Do nothing. Neither keyRef, c.Sk, nor certRef were set - can happen for example when using Fulcio and TSA.
+		// For an example see the TestAttachWithRFC3161Timestamp test in test/e2e_test.go.
 	}
 	co.SigVerifier = pubKey
 
 	// NB: There are only 2 kinds of verification right now:
 	// 1. You gave us the public key explicitly to verify against so co.SigVerifier is non-nil or,
-	// 2. We're going to find an x509 certificate on the signature and verify against Fulcio root trust
+	// 2. We’re going to find an x509 certificate on the signature and verify against
+	//    Fulcio root trust (or user supplied root trust)
 	// TODO(nsmith5): Refactor this verification logic to pass back _how_ verification
 	// was performed so we don't need to use this fragile logic here.
 	fulcioVerified := (co.SigVerifier == nil)
@@ -247,8 +271,8 @@ func (c *VerifyCommand) Exec(ctx context.Context, images []string) (err error) {
 			if err != nil {
 				return err
 			}
-			PrintVerificationHeader(img, co, bundleVerified, fulcioVerified)
-			PrintVerification(img, verified, c.Output)
+			PrintVerificationHeader(ctx, img, co, bundleVerified, fulcioVerified)
+			PrintVerification(ctx, verified, c.Output)
 		} else {
 			ref, err := name.ParseReference(img, c.NameOptions...)
 			if err != nil {
@@ -261,69 +285,73 @@ func (c *VerifyCommand) Exec(ctx context.Context, images []string) (err error) {
 
 			verified, bundleVerified, err := cosign.VerifyImageSignatures(ctx, ref, co)
 			if err != nil {
-				return err
+				return cosignError.WrapError(err)
 			}
 
-			PrintVerificationHeader(ref.Name(), co, bundleVerified, fulcioVerified)
-			PrintVerification(ref.Name(), verified, c.Output)
+			PrintVerificationHeader(ctx, ref.Name(), co, bundleVerified, fulcioVerified)
+			PrintVerification(ctx, verified, c.Output)
 		}
 	}
 
 	return nil
 }
 
-func PrintVerificationHeader(imgRef string, co *cosign.CheckOpts, bundleVerified, fulcioVerified bool) {
-	fmt.Fprintf(os.Stderr, "\nVerification for %s --\n", imgRef)
-	fmt.Fprintln(os.Stderr, "The following checks were performed on each of these signatures:")
+func PrintVerificationHeader(ctx context.Context, imgRef string, co *cosign.CheckOpts, bundleVerified, fulcioVerified bool) {
+	ui.Infof(ctx, "\nVerification for %s --", imgRef)
+	ui.Infof(ctx, "The following checks were performed on each of these signatures:")
 	if co.ClaimVerifier != nil {
 		if co.Annotations != nil {
-			fmt.Fprintln(os.Stderr, "  - The specified annotations were verified.")
+			ui.Infof(ctx, "  - The specified annotations were verified.")
 		}
-		fmt.Fprintln(os.Stderr, "  - The cosign claims were validated")
+		ui.Infof(ctx, "  - The cosign claims were validated")
 	}
 	if bundleVerified {
-		fmt.Fprintln(os.Stderr, "  - Existence of the claims in the transparency log was verified offline")
+		ui.Infof(ctx, "  - Existence of the claims in the transparency log was verified offline")
 	} else if co.RekorClient != nil {
-		fmt.Fprintln(os.Stderr, "  - The claims were present in the transparency log")
-		fmt.Fprintln(os.Stderr, "  - The signatures were integrated into the transparency log when the certificate was valid")
+		ui.Infof(ctx, "  - The claims were present in the transparency log")
+		ui.Infof(ctx, "  - The signatures were integrated into the transparency log when the certificate was valid")
 	}
 	if co.SigVerifier != nil {
-		fmt.Fprintln(os.Stderr, "  - The signatures were verified against the specified public key")
+		ui.Infof(ctx, "  - The signatures were verified against the specified public key")
 	}
 	if fulcioVerified {
-		fmt.Fprintln(os.Stderr, "  - Any certificates were verified against the Fulcio roots.")
+		ui.Infof(ctx, "  - The code-signing certificate was verified using trusted certificate authority certificates")
 	}
 }
 
 // PrintVerification logs details about the verification to stdout
-func PrintVerification(imgRef string, verified []oci.Signature, output string) {
+func PrintVerification(ctx context.Context, verified []oci.Signature, output string) {
 	switch output {
 	case "text":
 		for _, sig := range verified {
 			if cert, err := sig.Cert(); err == nil && cert != nil {
 				ce := cosign.CertExtensions{Cert: cert}
-				fmt.Fprintln(os.Stderr, "Certificate subject: ", sigs.CertSubject(cert))
+				sub := ""
+				if sans := cryptoutils.GetSubjectAlternateNames(cert); len(sans) > 0 {
+					sub = sans[0]
+				}
+				ui.Infof(ctx, "Certificate subject: %s", sub)
 				if issuerURL := ce.GetIssuer(); issuerURL != "" {
-					fmt.Fprintln(os.Stderr, "Certificate issuer URL: ", issuerURL)
+					ui.Infof(ctx, "Certificate issuer URL: %s", issuerURL)
 				}
 
 				if githubWorkflowTrigger := ce.GetCertExtensionGithubWorkflowTrigger(); githubWorkflowTrigger != "" {
-					fmt.Fprintln(os.Stderr, "GitHub Workflow Trigger:", githubWorkflowTrigger)
+					ui.Infof(ctx, "GitHub Workflow Trigger: %s", githubWorkflowTrigger)
 				}
 
 				if githubWorkflowSha := ce.GetExtensionGithubWorkflowSha(); githubWorkflowSha != "" {
-					fmt.Fprintln(os.Stderr, "GitHub Workflow SHA:", githubWorkflowSha)
+					ui.Infof(ctx, "GitHub Workflow SHA: %s", githubWorkflowSha)
 				}
 				if githubWorkflowName := ce.GetCertExtensionGithubWorkflowName(); githubWorkflowName != "" {
-					fmt.Fprintln(os.Stderr, "GitHub Workflow Name:", githubWorkflowName)
+					ui.Infof(ctx, "GitHub Workflow Name: %s", githubWorkflowName)
 				}
 
 				if githubWorkflowRepository := ce.GetCertExtensionGithubWorkflowRepository(); githubWorkflowRepository != "" {
-					fmt.Fprintln(os.Stderr, "GitHub Workflow Trigger", githubWorkflowRepository)
+					ui.Infof(ctx, "GitHub Workflow Repository: %s", githubWorkflowRepository)
 				}
 
 				if githubWorkflowRef := ce.GetCertExtensionGithubWorkflowRef(); githubWorkflowRef != "" {
-					fmt.Fprintln(os.Stderr, "GitHub Workflow Ref:", githubWorkflowRef)
+					ui.Infof(ctx, "GitHub Workflow Ref: %s", githubWorkflowRef)
 				}
 			}
 
@@ -355,7 +383,11 @@ func PrintVerification(imgRef string, verified []oci.Signature, output string) {
 				if ss.Optional == nil {
 					ss.Optional = make(map[string]interface{})
 				}
-				ss.Optional["Subject"] = sigs.CertSubject(cert)
+				sub := ""
+				if sans := cryptoutils.GetSubjectAlternateNames(cert); len(sans) > 0 {
+					sub = sans[0]
+				}
+				ss.Optional["Subject"] = sub
 				if issuerURL := ce.GetIssuer(); issuerURL != "" {
 					ss.Optional["Issuer"] = issuerURL
 					ss.Optional[cosign.CertExtensionOIDCIssuer] = issuerURL
@@ -456,4 +488,80 @@ func keylessVerification(keyRef string, sk bool) bool {
 		return false
 	}
 	return true
+}
+
+func shouldVerifySCT(ignoreSCT bool, keyRef string, sk bool) bool {
+	if keyRef != "" {
+		return false
+	}
+	if sk {
+		return false
+	}
+	if ignoreSCT {
+		return false
+	}
+	return true
+}
+
+// loadCertsKeylessVerification loads certificates provided as a certificate chain or CA roots + CA intermediate
+// certificate files. If both certChain and caRootsFile are empty strings, the Fulcio roots are loaded.
+//
+// The co *cosign.CheckOpts is both input and output parameter - it gets updated
+// with the root and intermediate certificates needed for verification.
+func loadCertsKeylessVerification(certChainFile string,
+	caRootsFile string,
+	caIntermediatesFile string,
+	co *cosign.CheckOpts) error {
+	var err error
+	switch {
+	case certChainFile != "":
+		chain, err := loadCertChainFromFileOrURL(certChainFile)
+		if err != nil {
+			return err
+		}
+		co.RootCerts = x509.NewCertPool()
+		co.RootCerts.AddCert(chain[len(chain)-1])
+		if len(chain) > 1 {
+			co.IntermediateCerts = x509.NewCertPool()
+			for _, cert := range chain[:len(chain)-1] {
+				co.IntermediateCerts.AddCert(cert)
+			}
+		}
+	case caRootsFile != "":
+		caRoots, err := loadCertChainFromFileOrURL(caRootsFile)
+		if err != nil {
+			return err
+		}
+		co.RootCerts = x509.NewCertPool()
+		if len(caRoots) > 0 {
+			for _, cert := range caRoots {
+				co.RootCerts.AddCert(cert)
+			}
+		}
+		if caIntermediatesFile != "" {
+			caIntermediates, err := loadCertChainFromFileOrURL(caIntermediatesFile)
+			if err != nil {
+				return err
+			}
+			if len(caIntermediates) > 0 {
+				co.IntermediateCerts = x509.NewCertPool()
+				for _, cert := range caIntermediates {
+					co.IntermediateCerts.AddCert(cert)
+				}
+			}
+		}
+	default:
+		// This performs an online fetch of the Fulcio roots from a TUF repository.
+		// This is needed for verifying keyless certificates (both online and offline).
+		co.RootCerts, err = fulcio.GetRoots()
+		if err != nil {
+			return fmt.Errorf("getting Fulcio roots: %w", err)
+		}
+		co.IntermediateCerts, err = fulcio.GetIntermediates()
+		if err != nil {
+			return fmt.Errorf("getting Fulcio intermediates: %w", err)
+		}
+	}
+
+	return nil
 }

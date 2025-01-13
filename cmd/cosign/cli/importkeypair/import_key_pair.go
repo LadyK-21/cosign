@@ -21,9 +21,11 @@ import (
 	"io"
 	"os"
 
-	icos "github.com/sigstore/cosign/internal/pkg/cosign"
-	"github.com/sigstore/cosign/pkg/cosign"
-	"github.com/sigstore/cosign/pkg/cosign/env"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/options"
+	icos "github.com/sigstore/cosign/v2/internal/pkg/cosign"
+	"github.com/sigstore/cosign/v2/internal/ui"
+	"github.com/sigstore/cosign/v2/pkg/cosign"
+	"github.com/sigstore/cosign/v2/pkg/cosign/env"
 )
 
 var (
@@ -32,40 +34,38 @@ var (
 )
 
 // nolint
-func ImportKeyPairCmd(ctx context.Context, keyVal string, args []string) error {
-	keys, err := cosign.ImportKeyPair(keyVal, GetPass)
+func ImportKeyPairCmd(ctx context.Context, o options.ImportKeyPairOptions, args []string) error {
+	keys, err := cosign.ImportKeyPair(o.Key, GetPass)
 	if err != nil {
 		return err
 	}
 
-	fileExists, err := icos.FileExists("import-cosign.key")
+	privateKeyFileName := o.OutputKeyPrefix + ".key"
+	publicKeyFileName := o.OutputKeyPrefix + ".pub"
+
+	fileExists, err := icos.FileExists(privateKeyFileName)
 	if err != nil {
-		return fmt.Errorf("failed checking if import-cosign.key exists: %w", err)
+		return fmt.Errorf("failed checking if %s exists: %w", privateKeyFileName, err)
 	}
 
 	if fileExists {
-		var overwrite string
-		fmt.Fprint(os.Stderr, "File import-cosign.key already exists. Overwrite (y/n)? ")
-		fmt.Scanf("%s", &overwrite)
-		switch overwrite {
-		case "y", "Y":
-		case "n", "N":
-			return nil
-		default:
-			fmt.Fprintln(os.Stderr, "Invalid input")
-			return nil
+		ui.Warnf(ctx, "File %s already exists. Overwrite?", privateKeyFileName)
+		if !o.SkipConfirmation {
+			if err := ui.ConfirmContinue(ctx); err != nil {
+				return err
+			}
 		}
 	}
 	// TODO: make sure the perms are locked down first.
-	if err := os.WriteFile("import-cosign.key", keys.PrivateBytes, 0600); err != nil {
+	if err := os.WriteFile(privateKeyFileName, keys.PrivateBytes, 0600); err != nil {
 		return err
 	}
-	fmt.Fprintln(os.Stderr, "Private key written to import-cosign.key")
+	fmt.Fprintln(os.Stderr, "Private key written to", privateKeyFileName)
 
-	if err := os.WriteFile("import-cosign.pub", keys.PublicBytes, 0644); err != nil {
+	if err := os.WriteFile(publicKeyFileName, keys.PublicBytes, 0644); err != nil {
 		return err
 	} // #nosec G306
-	fmt.Fprintln(os.Stderr, "Public key written to import-cosign.pub")
+	fmt.Fprintln(os.Stderr, "Public key written to", publicKeyFileName)
 	return nil
 }
 

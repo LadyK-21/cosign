@@ -23,8 +23,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/sigstore/cosign/cmd/cosign/cli/options"
-	"github.com/sigstore/cosign/pkg/cosign/env"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/options"
+	"github.com/sigstore/cosign/v2/pkg/cosign/env"
 )
 
 func Env() *cobra.Command {
@@ -34,7 +34,7 @@ func Env() *cobra.Command {
 		Use:   "env",
 		Short: "Prints Cosign environment variables",
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, _ []string) error {
 			envVars := env.EnvironmentVariables()
 			printEnv(envVars, getEnv(), getEnviron(), o.ShowDescriptions, o.ShowSensitiveValues)
 

@@ -20,8 +20,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/sigstore/cosign/cmd/cosign/cli/options"
-	"github.com/sigstore/cosign/cmd/cosign/cli/upload"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/options"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/upload"
 )
 
 func Upload() *cobra.Command {
@@ -65,7 +65,7 @@ func uploadBlob() *cobra.Command {
   cosign upload blob -a mykey=myvalue -a myotherkey="my other value" -f foo-darwin:darwin -f foo-linux:linux <IMAGE>`,
 		Args:             cobra.ExactArgs(1),
 		PersistentPreRun: options.BindViper,
-		PreRunE: func(cmd *cobra.Command, args []string) error {
+		PreRunE: func(_ *cobra.Command, _ []string) error {
 			if len(o.Files.Files) < 1 {
 				return flag.ErrHelp
 			}

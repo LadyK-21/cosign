@@ -23,9 +23,9 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/random"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
-	"github.com/sigstore/cosign/pkg/oci/mutate"
-	"github.com/sigstore/cosign/pkg/oci/signed"
-	"github.com/sigstore/cosign/pkg/oci/static"
+	"github.com/sigstore/cosign/v2/pkg/oci/mutate"
+	"github.com/sigstore/cosign/v2/pkg/oci/signed"
+	"github.com/sigstore/cosign/v2/pkg/oci/static"
 )
 
 func TestWriteSignatures(t *testing.T) {
@@ -53,7 +53,7 @@ func TestWriteSignatures(t *testing.T) {
 
 	ref := name.MustParseReference("gcr.io/bistroless/static:nonroot")
 
-	remoteWrite = func(ref name.Reference, img v1.Image, options ...remote.Option) error {
+	remoteWrite = func(_ name.Reference, img v1.Image, _ ...remote.Option) error {
 		l, err := img.Layers()
 		if err != nil {
 			return err
@@ -95,7 +95,7 @@ func TestWriteAttestations(t *testing.T) {
 
 	ref := name.MustParseReference("gcr.io/bistroless/static:nonroot")
 
-	remoteWrite = func(ref name.Reference, img v1.Image, options ...remote.Option) error {
+	remoteWrite = func(_ name.Reference, img v1.Image, _ ...remote.Option) error {
 		l, err := img.Layers()
 		if err != nil {
 			return err

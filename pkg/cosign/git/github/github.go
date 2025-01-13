@@ -25,12 +25,12 @@ import (
 	"os"
 	"strings"
 
-	"github.com/google/go-github/v45/github"
+	"github.com/google/go-github/v55/github"
 	"golang.org/x/crypto/nacl/box"
 	"golang.org/x/oauth2"
 
-	"github.com/sigstore/cosign/pkg/cosign"
-	"github.com/sigstore/cosign/pkg/cosign/env"
+	"github.com/sigstore/cosign/v2/pkg/cosign"
+	"github.com/sigstore/cosign/v2/pkg/cosign/env"
 )
 
 const (
@@ -51,28 +51,44 @@ func (g *Gh) PutSecret(ctx context.Context, ref string, pf cosign.PassFunc) erro
 		)
 		httpClient = oauth2.NewClient(ctx, ts)
 	} else {
-		return fmt.Errorf("could not find %q environment variable", env.VariableGitHubRequestToken.String())
+		return fmt.Errorf("could not find %q environment variable", env.VariableGitHubToken.String())
 	}
-	client := github.NewClient(httpClient)
+
+	var client *github.Client
+	if host, ok := env.LookupEnv(env.VariableGitHubHost); ok {
+		var err error
+		client, err = github.NewClient(httpClient).WithEnterpriseURLs(host, host)
+		if err != nil {
+			return fmt.Errorf("could not create github enterprise client: %w", err)
+		}
+	} else {
+		client = github.NewClient(httpClient)
+	}
 
 	keys, err := cosign.GenerateKeyPair(pf)
 	if err != nil {
 		return fmt.Errorf("generating key pair: %w", err)
 	}
 
+	var owner, repo string
 	split := strings.Split(ref, "/")
-	if len(split) < 2 {
-		return errors.New("could not parse scheme, use github://<owner>/<repo> format")
-	}
-	owner, repo := split[0], split[1]
 
-	key, getRepoPubKeyResp, err := client.Actions.GetRepoPublicKey(ctx, owner, repo)
+	switch len(split) {
+	case 2:
+		owner, repo = split[0], split[1]
+	case 1:
+		owner = split[0]
+	default:
+		return errors.New("could not parse scheme, use github://<owner> or github://<owner>/<repo> format")
+	}
+
+	key, getPubKeyResp, err := getPublicKey(ctx, client, owner, repo)
 	if err != nil {
 		return fmt.Errorf("could not get repository public key: %w", err)
 	}
 
-	if getRepoPubKeyResp.StatusCode < 200 && getRepoPubKeyResp.StatusCode >= 300 {
-		bodyBytes, _ := io.ReadAll(getRepoPubKeyResp.Body)
+	if getPubKeyResp.StatusCode < 200 && getPubKeyResp.StatusCode >= 300 {
+		bodyBytes, _ := io.ReadAll(getPubKeyResp.Body)
 		return fmt.Errorf("%s", bodyBytes)
 	}
 
@@ -81,7 +97,7 @@ func (g *Gh) PutSecret(ctx context.Context, ref string, pf cosign.PassFunc) erro
 		return fmt.Errorf("could not encrypt the secret: %w", err)
 	}
 
-	passwordSecretEnvResp, err := client.Actions.CreateOrUpdateRepoSecret(ctx, owner, repo, encryptedCosignPasswd)
+	passwordSecretEnvResp, err := createOrUpdateOrgSecret(ctx, client, owner, repo, encryptedCosignPasswd)
 	if err != nil {
 		return fmt.Errorf("could not create \"COSIGN_PASSWORD\" github actions secret: %w", err)
 	}
@@ -98,7 +114,7 @@ func (g *Gh) PutSecret(ctx context.Context, ref string, pf cosign.PassFunc) erro
 		return fmt.Errorf("could not encrypt the secret: %w", err)
 	}
 
-	privateKeySecretEnvResp, err := client.Actions.CreateOrUpdateRepoSecret(ctx, owner, repo, encryptedCosignPrivKey)
+	privateKeySecretEnvResp, err := createOrUpdateOrgSecret(ctx, client, owner, repo, encryptedCosignPrivKey)
 	if err != nil {
 		return fmt.Errorf("could not create \"COSIGN_PRIVATE_KEY\" github actions secret: %w", err)
 	}
@@ -115,7 +131,7 @@ func (g *Gh) PutSecret(ctx context.Context, ref string, pf cosign.PassFunc) erro
 		return fmt.Errorf("could not encrypt the secret: %w", err)
 	}
 
-	publicKeySecretEnvResp, err := client.Actions.CreateOrUpdateRepoSecret(ctx, owner, repo, encryptedCosignPubKey)
+	publicKeySecretEnvResp, err := createOrUpdateOrgSecret(ctx, client, owner, repo, encryptedCosignPubKey)
 	if err != nil {
 		return fmt.Errorf("could not create \"COSIGN_PUBLIC_KEY\" github actions secret: %w", err)
 	}
@@ -136,8 +152,22 @@ func (g *Gh) PutSecret(ctx context.Context, ref string, pf cosign.PassFunc) erro
 }
 
 // NOTE: GetSecret is not implemented for GitHub
-func (g *Gh) GetSecret(ctx context.Context, ref string, key string) (string, error) {
+func (g *Gh) GetSecret(ctx context.Context, ref string, key string) (string, error) { //nolint: revive
 	return "", nil
+}
+
+func createOrUpdateOrgSecret(ctx context.Context, client *github.Client, owner string, repo string, encryptedCosignPasswd *github.EncryptedSecret) (*github.Response, error) {
+	if len(repo) > 0 {
+		return client.Actions.CreateOrUpdateRepoSecret(ctx, owner, repo, encryptedCosignPasswd)
+	}
+	return client.Actions.CreateOrUpdateOrgSecret(ctx, owner, encryptedCosignPasswd)
+}
+
+func getPublicKey(ctx context.Context, client *github.Client, owner string, repo string) (*github.PublicKey, *github.Response, error) {
+	if len(repo) > 0 {
+		return client.Actions.GetRepoPublicKey(ctx, owner, repo)
+	}
+	return client.Actions.GetOrgPublicKey(ctx, owner)
 }
 
 func encryptSecretWithPublicKey(publicKey *github.PublicKey, secretName string, secretValue []byte) (*github.EncryptedSecret, error) {

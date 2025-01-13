@@ -15,8 +15,9 @@
 package cli
 
 import (
-	"github.com/sigstore/cosign/cmd/cosign/cli/attest"
-	"github.com/sigstore/cosign/cmd/cosign/cli/options"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/attest"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/generate"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/options"
 	"github.com/spf13/cobra"
 )
 
@@ -41,18 +42,52 @@ func AttestBlob() *cobra.Command {
   cosign attest-blob --predicate <FILE> --type <TYPE> --key gcpkms://projects/[PROJECT]/locations/global/keyRings/[KEYRING]/cryptoKeys/[KEY]/versions/[VERSION] <BLOB>
 
   # attach an attestation to a blob with a key pair stored in Hashicorp Vault
-  cosign attest-blob --predicate <FILE> --type <TYPE> --key hashivault://[KEY] <BLOB>`,
+  cosign attest-blob --predicate <FILE> --type <TYPE> --key hashivault://[KEY] <BLOB>
+
+  # supply attestation via stdin
+  echo <PAYLOAD> | cosign attest-blob --predicate - --yes`,
 
 		Args:             cobra.ExactArgs(1),
 		PersistentPreRun: options.BindViper,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			oidcClientSecret, err := o.OIDC.ClientSecret()
+			if err != nil {
+				return err
+			}
+			ko := options.KeyOpts{
+				KeyRef:                   o.Key,
+				PassFunc:                 generate.GetPass,
+				Sk:                       o.SecurityKey.Use,
+				Slot:                     o.SecurityKey.Slot,
+				FulcioURL:                o.Fulcio.URL,
+				IDToken:                  o.Fulcio.IdentityToken,
+				FulcioAuthFlow:           o.Fulcio.AuthFlow,
+				InsecureSkipFulcioVerify: o.Fulcio.InsecureSkipFulcioVerify,
+				RekorURL:                 o.Rekor.URL,
+				OIDCIssuer:               o.OIDC.Issuer,
+				OIDCClientID:             o.OIDC.ClientID,
+				OIDCClientSecret:         oidcClientSecret,
+				OIDCRedirectURL:          o.OIDC.RedirectURL,
+				OIDCProvider:             o.OIDC.Provider,
+				SkipConfirmation:         o.SkipConfirmation,
+				TSAServerURL:             o.TSAServerURL,
+				RFC3161TimestampPath:     o.RFC3161TimestampPath,
+				BundlePath:               o.BundlePath,
+				NewBundleFormat:          o.NewBundleFormat,
+			}
 			v := attest.AttestBlobCommand{
-				KeyRef:            o.Key,
+				KeyOpts:           ko,
+				CertPath:          o.Cert,
+				CertChainPath:     o.CertChain,
 				ArtifactHash:      o.Hash,
+				TlogUpload:        o.TlogUpload,
 				PredicateType:     o.Predicate.Type,
 				PredicatePath:     o.Predicate.Path,
 				OutputSignature:   o.OutputSignature,
 				OutputAttestation: o.OutputAttestation,
+				OutputCertificate: o.OutputCertificate,
+				Timeout:           ro.Timeout,
+				RekorEntryType:    o.RekorEntryType,
 			}
 			return v.Exec(cmd.Context(), args[0])
 		},

@@ -17,43 +17,43 @@ package verify
 
 import (
 	"context"
-	"crypto/x509"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/google/go-containerregistry/pkg/name"
-	"github.com/sigstore/cosign/pkg/cosign/pkcs11key"
-	"github.com/sigstore/cosign/pkg/cosign/rego"
-	"github.com/sigstore/cosign/pkg/oci"
-
-	"github.com/sigstore/cosign/cmd/cosign/cli/fulcio"
-	"github.com/sigstore/cosign/cmd/cosign/cli/options"
-	"github.com/sigstore/cosign/cmd/cosign/cli/rekor"
-	"github.com/sigstore/cosign/pkg/cosign"
-	"github.com/sigstore/cosign/pkg/cosign/cue"
-	"github.com/sigstore/cosign/pkg/cosign/pivkey"
-	"github.com/sigstore/cosign/pkg/policy"
-	sigs "github.com/sigstore/cosign/pkg/signature"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/fulcio"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/options"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/rekor"
+	"github.com/sigstore/cosign/v2/internal/ui"
+	"github.com/sigstore/cosign/v2/pkg/cosign"
+	"github.com/sigstore/cosign/v2/pkg/cosign/cue"
+	"github.com/sigstore/cosign/v2/pkg/cosign/pivkey"
+	"github.com/sigstore/cosign/v2/pkg/cosign/pkcs11key"
+	"github.com/sigstore/cosign/v2/pkg/cosign/rego"
+	"github.com/sigstore/cosign/v2/pkg/oci"
+	"github.com/sigstore/cosign/v2/pkg/policy"
+	sigs "github.com/sigstore/cosign/v2/pkg/signature"
 )
 
 // VerifyAttestationCommand verifies a signature on a supplied container image
 // nolint
 type VerifyAttestationCommand struct {
 	options.RegistryOptions
+	options.CertVerifyOptions
 	CheckClaims                  bool
 	KeyRef                       string
 	CertRef                      string
-	CertEmail                    string
-	CertIdentity                 string
-	CertOidcIssuer               string
 	CertGithubWorkflowTrigger    string
 	CertGithubWorkflowSha        string
 	CertGithubWorkflowName       string
 	CertGithubWorkflowRepository string
 	CertGithubWorkflowRef        string
+	CAIntermediates              string
+	CARoots                      string
 	CertChain                    string
 	IgnoreSCT                    bool
 	SCTRef                       string
@@ -67,7 +67,9 @@ type VerifyAttestationCommand struct {
 	NameOptions                  []name.Option
 	Offline                      bool
 	TSACertChainPath             string
-	SkipTlogVerify               bool
+	IgnoreTlog                   bool
+	MaxWorkers                   int
+	UseSignedTimestamps          bool
 }
 
 // Exec runs the verification command
@@ -81,47 +83,56 @@ func (c *VerifyAttestationCommand) Exec(ctx context.Context, images []string) (e
 		return &options.KeyParseError{}
 	}
 
+	var identities []cosign.Identity
+	if c.KeyRef == "" {
+		identities, err = c.Identities()
+		if err != nil {
+			return err
+		}
+	}
+
 	ociremoteOpts, err := c.ClientOpts(ctx)
 	if err != nil {
 		return fmt.Errorf("constructing client options: %w", err)
 	}
+
 	co := &cosign.CheckOpts{
 		RegistryClientOpts:           ociremoteOpts,
-		CertEmail:                    c.CertEmail,
-		CertIdentity:                 c.CertIdentity,
-		CertOidcIssuer:               c.CertOidcIssuer,
 		CertGithubWorkflowTrigger:    c.CertGithubWorkflowTrigger,
 		CertGithubWorkflowSha:        c.CertGithubWorkflowSha,
 		CertGithubWorkflowName:       c.CertGithubWorkflowName,
 		CertGithubWorkflowRepository: c.CertGithubWorkflowRepository,
 		CertGithubWorkflowRef:        c.CertGithubWorkflowRef,
 		IgnoreSCT:                    c.IgnoreSCT,
+		Identities:                   identities,
 		Offline:                      c.Offline,
-		SkipTlogVerify:               c.SkipTlogVerify,
+		IgnoreTlog:                   c.IgnoreTlog,
+		MaxWorkers:                   c.MaxWorkers,
+		UseSignedTimestamps:          c.TSACertChainPath != "" || c.UseSignedTimestamps,
 	}
 	if c.CheckClaims {
 		co.ClaimVerifier = cosign.IntotoSubjectClaimVerifier
 	}
-	if c.TSACertChainPath != "" {
-		_, err := os.Stat(c.TSACertChainPath)
+	// Ignore Signed Certificate Timestamp if the flag is set or a key is provided
+	if shouldVerifySCT(c.IgnoreSCT, c.KeyRef, c.Sk) {
+		co.CTLogPubKeys, err = cosign.GetCTLogPubs(ctx)
 		if err != nil {
-			return fmt.Errorf("unable to open timestamp certificate chain file '%s: %w", c.TSACertChainPath, err)
+			return fmt.Errorf("getting ctlog public keys: %w", err)
 		}
-		// TODO: Add support for TUF certificates.
-		pemBytes, err := os.ReadFile(filepath.Clean(c.TSACertChainPath))
-		if err != nil {
-			return fmt.Errorf("error reading certification chain path file: %w", err)
-		}
-		// TODO: Update this logic once https://github.com/sigstore/timestamp-authority/issues/121 gets merged.
-		// This relies on untrusted leaf certificate.
-		tsaCertPool := x509.NewCertPool()
-		ok := tsaCertPool.AppendCertsFromPEM(pemBytes)
-		if !ok {
-			return fmt.Errorf("error parsing response into Timestamp while appending certs from PEM")
-		}
-		co.TSACerts = tsaCertPool
 	}
-	if !c.SkipTlogVerify {
+
+	// If we are using signed timestamps, we need to load the TSA certificates
+	if co.UseSignedTimestamps {
+		tsaCertificates, err := cosign.GetTSACerts(ctx, c.TSACertChainPath, cosign.GetTufTargets)
+		if err != nil {
+			return fmt.Errorf("unable to load TSA certificates: %w", err)
+		}
+		co.TSACertificate = tsaCertificates.LeafCert
+		co.TSARootCertificates = tsaCertificates.RootCert
+		co.TSAIntermediateCertificates = tsaCertificates.IntermediateCerts
+	}
+
+	if !c.IgnoreTlog {
 		if c.RekorURL != "" {
 			rekorClient, err := rekor.NewClient(c.RekorURL)
 			if err != nil {
@@ -136,18 +147,13 @@ func (c *VerifyAttestationCommand) Exec(ctx context.Context, images []string) (e
 			return fmt.Errorf("getting Rekor public keys: %w", err)
 		}
 	}
+
 	if keylessVerification(c.KeyRef, c.Sk) {
-		// This performs an online fetch of the Fulcio roots. This is needed
-		// for verifying keyless certificates (both online and offline).
-		co.RootCerts, err = fulcio.GetRoots()
-		if err != nil {
-			return fmt.Errorf("getting Fulcio roots: %w", err)
-		}
-		co.IntermediateCerts, err = fulcio.GetIntermediates()
-		if err != nil {
-			return fmt.Errorf("getting Fulcio intermediates: %w", err)
+		if err := loadCertsKeylessVerification(c.CertChain, c.CARoots, c.CAIntermediates, co); err != nil {
+			return err
 		}
 	}
+
 	keyRef := c.KeyRef
 
 	// Keys are optional!
@@ -208,6 +214,9 @@ func (c *VerifyAttestationCommand) Exec(ctx context.Context, images []string) (e
 			}
 			co.SCT = sct
 		}
+	case c.CARoots != "":
+		// CA roots + possible intermediates are already loaded into co.RootCerts with the call to
+		// loadCertsKeylessVerification above.
 	}
 
 	// NB: There are only 2 kinds of verification right now:
@@ -253,18 +262,23 @@ func (c *VerifyAttestationCommand) Exec(ctx context.Context, images []string) (e
 
 		var checked []oci.Signature
 		var validationErrors []error
+		// To aid in determining if there's a mismatch in what predicateType
+		// we're looking for and what we checked, keep track of them here so
+		// that we can help the user figure out if there's a typo, etc.
+		checkedPredicateTypes := []string{}
 		for _, vp := range verified {
-			payload, err := policy.AttestationToPayloadJSON(ctx, c.PredicateType, vp)
+			payload, gotPredicateType, err := policy.AttestationToPayloadJSON(ctx, c.PredicateType, vp)
 			if err != nil {
 				return fmt.Errorf("converting to consumable policy validation: %w", err)
 			}
+			checkedPredicateTypes = append(checkedPredicateTypes, gotPredicateType)
 			if len(payload) == 0 {
 				// This is not the predicate type we're looking for.
 				continue
 			}
 
 			if len(cuePolicies) > 0 {
-				fmt.Fprintf(os.Stderr, "will be validating against CUE policies: %v\n", cuePolicies)
+				ui.Infof(ctx, "will be validating against CUE policies: %v", cuePolicies)
 				cueValidationErr := cue.ValidateJSON(payload, cuePolicies)
 				if cueValidationErr != nil {
 					validationErrors = append(validationErrors, cueValidationErr)
@@ -273,7 +287,7 @@ func (c *VerifyAttestationCommand) Exec(ctx context.Context, images []string) (e
 			}
 
 			if len(regoPolicies) > 0 {
-				fmt.Fprintf(os.Stderr, "will be validating against Rego policies: %v\n", regoPolicies)
+				ui.Infof(ctx, "will be validating against Rego policies: %v", regoPolicies)
 				regoValidationErrs := rego.ValidateJSON(payload, regoPolicies)
 				if len(regoValidationErrs) > 0 {
 					validationErrors = append(validationErrors, regoValidationErrs...)
@@ -285,21 +299,21 @@ func (c *VerifyAttestationCommand) Exec(ctx context.Context, images []string) (e
 		}
 
 		if len(validationErrors) > 0 {
-			fmt.Fprintf(os.Stderr, "There are %d number of errors occurred during the validation:\n", len(validationErrors))
+			ui.Infof(ctx, "There are %d number of errors occurred during the validation:\n", len(validationErrors))
 			for _, v := range validationErrors {
-				_, _ = fmt.Fprintf(os.Stderr, "- %v\n", v)
+				ui.Infof(ctx, "- %v", v)
 			}
 			return fmt.Errorf("%d validation errors occurred", len(validationErrors))
 		}
 
 		if len(checked) == 0 {
-			return fmt.Errorf("none of the attestations matched the predicate type: %s", c.PredicateType)
+			return fmt.Errorf("none of the attestations matched the predicate type: %s, found: %s", c.PredicateType, strings.Join(checkedPredicateTypes, ","))
 		}
 
 		// TODO: add CUE validation report to `PrintVerificationHeader`.
-		PrintVerificationHeader(imageRef, co, bundleVerified, fulcioVerified)
+		PrintVerificationHeader(ctx, imageRef, co, bundleVerified, fulcioVerified)
 		// The attestations are always JSON, so use the raw "text" mode for outputting them instead of conversion
-		PrintVerification(imageRef, checked, "text")
+		PrintVerification(ctx, checked, "text")
 	}
 
 	return nil

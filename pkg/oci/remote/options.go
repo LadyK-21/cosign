@@ -21,7 +21,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
-	"github.com/sigstore/cosign/pkg/cosign/env"
+	"github.com/sigstore/cosign/v2/pkg/cosign/env"
 )
 
 const (
@@ -110,6 +110,14 @@ func WithSBOMSuffix(suffix string) Option {
 func WithRemoteOptions(opts ...remote.Option) Option {
 	return func(o *options) {
 		o.ROpt = opts
+	}
+}
+
+// WithMoreRemoteOptions is a functional option for adding to the default
+// remote options already specified
+func WithMoreRemoteOptions(opts ...remote.Option) Option {
+	return func(o *options) {
+		o.ROpt = append(o.ROpt, opts...)
 	}
 }
 

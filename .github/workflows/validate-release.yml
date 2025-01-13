@@ -23,51 +23,75 @@ on:
   pull_request:
 
 jobs:
-  validate-release-job:
+  check-signature:
     runs-on: ubuntu-latest
-
-    permissions:
-      actions: none
-      checks: none
-      contents: none
-      deployments: none
-      issues: none
-      packages: none
-      pull-requests: none
-      repository-projects: none
-      security-events: none
-      statuses: none
-
-    env:
-      CROSS_BUILDER_IMAGE: ghcr.io/gythialy/golang-cross:v1.19.4-0@sha256:53ee894818ac14377996a6fe7c8fe6156d018a20f82aaf69f2519fc45d897bec
-      COSIGN_IMAGE: gcr.io/projectsigstore/cosign:v1.13.1@sha256:fd5b09be23ef1027e1bdd490ce78dcc65d2b15902e1f4ba8e04f3b4019cc1057
+    container:
+      image: ghcr.io/sigstore/cosign/cosign:v2.4.1-dev@sha256:a1bb112f1758703aa1d222bf30b9655d04cf196c0b7feaf3479d1222c2283590
 
     steps:
-      - uses: actions/checkout@755da8c3cf115ac066823e79a1e1788f8940201b # v3.2.0
-
       - name: Check Signature
         run: |
-          docker run --rm \
-          -e COSIGN_EXPERIMENTAL=true \
-          -e TUF_ROOT=/tmp \
-          $COSIGN_IMAGE \
-          verify \
-          $CROSS_BUILDER_IMAGE
+          cosign verify ghcr.io/gythialy/golang-cross:v1.23.4-0@sha256:fac6f9675e3e3a4ccc2b8cdab87b907cabae3a9c4e046d16816b9876315005e4 \
+          --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+          --certificate-identity "https://github.com/gythialy/golang-cross/.github/workflows/release-golang-cross.yml@refs/tags/v1.23.4-0"
+        env:
+          TUF_ROOT: /tmp
+
+  validate-release-job:
+    runs-on: ubuntu-latest
+    needs:
+      - check-signature
+
+    container:
+      image: ghcr.io/gythialy/golang-cross:v1.23.4-0@sha256:fac6f9675e3e3a4ccc2b8cdab87b907cabae3a9c4e046d16816b9876315005e4
+      volumes:
+        - /usr:/host_usr
+        - /opt:/host_opt
+
+    permissions: {}
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      # Error: fatal: detected dubious ownership in repository at '/__w/cosign/cosign'
+      #      To add an exception for this directory, call:
+      #          git config --system --add safe.directory /__w/cosign/cosign
+      # Reason: Recent versions of git require the .git folder to be owned
+      # by the same user (see https://github.blog/2022-04-12-git-security-vulnerability-announced/).
+      # Related
+      # - https://github.com/actions/runner/issues/2033
+      # - https://github.com/actions/checkout/issues/1048
+      # - https://github.com/actions/runner-images/issues/6775
+      - run: git config --system --add safe.directory /__w/cosign/cosign
+
+      # Related to https://github.com/sigstore/cosign/issues/3149
+      # note this runs from within the golang-cross container, so if we want to free up space
+      # on the host, we have to reach through the bind mounts to clean up unused content on the runners
+      - name: free up disk space for the release
+        run: |
+          rm -rf /host_usr/share/dotnet || true
+          rm -rf /host_usr/share/swift || true
+          rm -rf /host_usr/local/lib/android || true
+          rm -rf /host_usr/local/.ghcup || true
+          rm -rf /host_usr/local/graalvm/ || true
+          rm -rf /host_usr/local/share/powershell || true
+          rm -rf /host_usr/local/share/chromium || true
+          rm -rf /host_usr/local/lib/node_modules || true
+          rm -rf /host_usr/lib/google-cloud-sdk || true
+          rm -rf /host_usr/local/share/boost || true
+          rm -rf /host_opt/hostedtoolcache/ || true
+          rm -rf /host_opt/ghc || true
+      - name: check disk space
+        run: df -h
 
       - name: goreleaser snapshot
-        run: |
-          docker run --rm --privileged \
-          -e PROJECT_ID=honk-fake-project \
-          -e CI=$CI \
-          -e RUNTIME_IMAGE=gcr.io/distroless/static:debug-nonroot \
-          -v ${PWD}:/go/src/sigstore/cosign \
-          -v /var/run/docker.sock:/var/run/docker.sock \
-          -w /go/src/sigstore/cosign \
-          --entrypoint="" \
-          $CROSS_BUILDER_IMAGE \
-          make snapshot
+        run: make snapshot
+        env:
+          PROJECT_ID: honk-fake-project
+          RUNTIME_IMAGE: gcr.io/distroless/static-debian12:nonroot
 
       - name: check binaries
         run: |
           ./dist/cosign-linux-amd64 version
-          ./dist/sget-linux-amd64 version

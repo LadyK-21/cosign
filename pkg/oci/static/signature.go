@@ -18,12 +18,13 @@ package static
 import (
 	"bytes"
 	"crypto/x509"
+	"encoding/base64"
 	"io"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/types"
-	"github.com/sigstore/cosign/pkg/cosign/bundle"
-	"github.com/sigstore/cosign/pkg/oci"
+	"github.com/sigstore/cosign/v2/pkg/cosign/bundle"
+	"github.com/sigstore/cosign/v2/pkg/oci"
 	"github.com/sigstore/sigstore/pkg/cryptoutils"
 )
 
@@ -136,6 +137,15 @@ func (l *staticLayer) Annotations() (map[string]string, error) {
 // Payload implements oci.Signature
 func (l *staticLayer) Payload() ([]byte, error) {
 	return l.b, nil
+}
+
+// Signature implements oci.Signature
+func (l *staticLayer) Signature() ([]byte, error) {
+	b64sig, err := l.Base64Signature()
+	if err != nil {
+		return nil, err
+	}
+	return base64.StdEncoding.DecodeString(b64sig)
 }
 
 // Base64Signature implements oci.Signature

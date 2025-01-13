@@ -15,22 +15,21 @@
 package cosign
 
 import (
-	"errors"
 	"fmt"
 	"testing"
+
+	"errors"
 )
 
 func TestErrors(t *testing.T) {
 	for _, want := range []error{
-		ErrNoMatchingAttestations,
-		ErrNoMatchingSignatures,
-		NewVerificationError("not a constant %d", 3),
-		fmt.Errorf("wrapped errors: %w", ErrNoMatchingSignatures),
+		&VerificationFailure{fmt.Errorf("not a constant %d", 3)},
+		&VerificationFailure{fmt.Errorf("not a string %s", "i am a string")},
 	} {
 		t.Run(want.Error(), func(t *testing.T) {
-			verr := &VerificationError{}
+			verr := &VerificationFailure{}
 			if !errors.As(want, &verr) {
-				t.Errorf("%v is not a %T", want, &VerificationError{})
+				t.Errorf("%v is not a %T", want, &VerificationFailure{})
 			}
 
 			// Check that Is sees it as the same error through multiple

@@ -18,8 +18,8 @@ package cli
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/sigstore/cosign/cmd/cosign/cli/generate"
-	"github.com/sigstore/cosign/cmd/cosign/cli/options"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/generate"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/options"
 )
 
 func GenerateKeyPair() *cobra.Command {
@@ -33,6 +33,9 @@ func GenerateKeyPair() *cobra.Command {
 
   # generate key-pair and write to cosign.key and cosign.pub files
   cosign generate-key-pair
+
+  # generate key-pair and write to custom named my-name.key and my-name.pub files
+  cosign generate-key-pair --output-key-prefix my-name
 
   # generate a key-pair in Azure Key Vault
   cosign generate-key-pair --kms azurekms://[VAULT_NAME][VAULT_URI]/[KEY]
@@ -64,7 +67,7 @@ CAVEATS:
 
 		PersistentPreRun: options.BindViper,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return generate.GenerateKeyPairCmd(cmd.Context(), o.KMS, args)
+			return generate.GenerateKeyPairCmd(cmd.Context(), o.KMS, o.OutputKeyPrefix, args)
 		},
 	}
 

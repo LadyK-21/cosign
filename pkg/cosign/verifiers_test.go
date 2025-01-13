@@ -18,14 +18,14 @@ import (
 	"testing"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
-	"github.com/sigstore/cosign/pkg/oci/static"
+	"github.com/sigstore/cosign/v2/pkg/oci/static"
 )
 
 /*
 The following JSON is the payload in valid attestation:
 {
   "_type": "https://in-toto.io/Statement/v0.1",
-  "predicateType": "cosign.sigstore.dev/attestation/v1",
+  "predicateType": "https://cosign.sigstore.dev/attestation/v1",
   "subject": [
     {
       "name": "registry.local:5000/knative/demo",

@@ -16,6 +16,7 @@
 package policy
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509"
 	"encoding/json"
@@ -28,10 +29,10 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/types"
 	"github.com/in-toto/in-toto-golang/in_toto"
-	"github.com/sigstore/cosign/pkg/cosign/attestation"
-	"github.com/sigstore/cosign/pkg/cosign/bundle"
-	"github.com/sigstore/cosign/pkg/oci"
-	"github.com/sigstore/cosign/pkg/oci/static"
+	"github.com/sigstore/cosign/v2/pkg/cosign/attestation"
+	"github.com/sigstore/cosign/v2/pkg/cosign/bundle"
+	"github.com/sigstore/cosign/v2/pkg/oci"
+	"github.com/sigstore/cosign/v2/pkg/oci/static"
 )
 
 type failingAttestation struct {
@@ -41,6 +42,9 @@ func (fa *failingAttestation) Payload() ([]byte, error) {
 	return nil, fmt.Errorf("inducing test failure")
 }
 func (fa *failingAttestation) Annotations() (map[string]string, error) {
+	return nil, fmt.Errorf("unimplemented")
+}
+func (fa *failingAttestation) Signature() ([]byte, error) {
 	return nil, fmt.Errorf("unimplemented")
 }
 func (fa *failingAttestation) Base64Signature() (string, error) {
@@ -100,8 +104,7 @@ func TestFailures(t *testing.T) {
 		payload          string
 		predicateType    string
 		wantErrSubstring string
-	}{{payload: "", predicateType: "notvalidpredicate", wantErrSubstring: "invalid predicate type"},
-		{payload: "", wantErrSubstring: "unmarshaling payload data"}, {payload: "{badness", wantErrSubstring: "unmarshaling payload data"},
+	}{{payload: "", wantErrSubstring: "unmarshaling payload data"}, {payload: "{badness", wantErrSubstring: "unmarshaling payload data"},
 		{payload: `{"payloadType":"notmarshallable}`, wantErrSubstring: "unmarshaling payload data"},
 		{payload: `{"payload":"shou!ln'twork"}`, wantErrSubstring: "decoding payload"},
 		{payload: `{"payloadType":"finebutnopayload"}`, wantErrSubstring: "could not find payload"},
@@ -116,7 +119,7 @@ func TestFailures(t *testing.T) {
 		if predicateType == "" {
 			predicateType = "custom"
 		}
-		_, err = AttestationToPayloadJSON(context.TODO(), predicateType, att)
+		_, _, err = AttestationToPayloadJSON(context.TODO(), predicateType, att)
 		checkFailure(t, tc.wantErrSubstring, err)
 	}
 }
@@ -127,7 +130,7 @@ func TestFailures(t *testing.T) {
 // constructing different attestations there.
 func TestErroringPayload(t *testing.T) {
 	// Payload() call fails
-	_, err := AttestationToPayloadJSON(context.TODO(), "custom", &failingAttestation{})
+	_, _, err := AttestationToPayloadJSON(context.TODO(), "custom", &failingAttestation{})
 	checkFailure(t, "inducing test failure", err)
 }
 func TestAttestationToPayloadJson(t *testing.T) {
@@ -139,7 +142,7 @@ func TestAttestationToPayloadJson(t *testing.T) {
 		if err != nil {
 			t.Fatal("Failed to create static.NewSignature: ", err)
 		}
-		jsonBytes, err := AttestationToPayloadJSON(context.TODO(), fileName, ociSig)
+		jsonBytes, gotPredicateType, err := AttestationToPayloadJSON(context.TODO(), fileName, ociSig)
 		if err != nil {
 			t.Fatalf("Failed to convert : %s", err)
 		}
@@ -147,18 +150,64 @@ func TestAttestationToPayloadJson(t *testing.T) {
 		case "custom":
 			var intoto in_toto.Statement
 			if err := json.Unmarshal(jsonBytes, &intoto); err != nil {
-				t.Fatal("Wanted custom statement, can't unmarshal to it: ", err)
+				t.Fatalf("[%s] Wanted custom statement, can't unmarshal to it: %v", fileName, err)
 			}
 			checkPredicateType(t, attestation.CosignCustomProvenanceV01, intoto.PredicateType)
+			checkPredicateType(t, gotPredicateType, intoto.PredicateType)
 		case "vuln":
 			var vulnStatement attestation.CosignVulnStatement
 			if err := json.Unmarshal(jsonBytes, &vulnStatement); err != nil {
-				t.Fatal("Wanted vuln statement, can't unmarshal to it: ", err)
+				t.Fatalf("[%s] Wanted vuln statement, can't unmarshal to it: %v", fileName, err)
 			}
 			checkPredicateType(t, attestation.CosignVulnProvenanceV01, vulnStatement.PredicateType)
+			checkPredicateType(t, gotPredicateType, vulnStatement.PredicateType)
 		case "default":
 			t.Fatal("non supported predicate file")
 		}
+	}
+}
+
+type myPayloadProvider struct {
+	payload []byte
+}
+
+func (m *myPayloadProvider) Payload() ([]byte, error) {
+	return m.payload, nil
+}
+
+// assert that myPayloadProvider implements PayloadProvider
+var _ PayloadProvider = &myPayloadProvider{}
+
+// TestPayloadProvider tests that the PayloadProvider interface is working as expected.
+func TestPayloadProvider(t *testing.T) {
+	// Control: oci.Signature
+	attestationBytes := readAttestationFromTestFile(t, "valid", "vuln")
+	ociSig, err := static.NewSignature(attestationBytes, "")
+	if err != nil {
+		t.Fatal("Failed to create static.NewSignature: ", err)
+	}
+	jsonBytes, gotPredicateType, err := AttestationToPayloadJSON(context.TODO(), "vuln", ociSig)
+	if err != nil {
+		t.Fatalf("Failed to convert : %s", err)
+	}
+	if len(jsonBytes) == 0 {
+		t.Fatalf("Failed to get jsonBytes")
+	}
+	if gotPredicateType != attestation.CosignVulnProvenanceV01 {
+		t.Fatalf("Did not get expected predicateType, want: %s got: %s", attestation.CosignVulnProvenanceV01, gotPredicateType)
+	}
+
+	// Test: myPayloadProvider
+	provider := &myPayloadProvider{payload: attestationBytes}
+	jsonBytes2, gotPredicateType2, err := AttestationToPayloadJSON(context.TODO(), "vuln", provider)
+	if err != nil {
+		t.Fatalf("Failed to convert : %s", err)
+	}
+	if !bytes.Equal(jsonBytes, jsonBytes2) {
+		t.Fatalf("Expected same jsonBytes, got different")
+	}
+	if gotPredicateType != gotPredicateType2 {
+		t.Fatalf("Expected same predicateType, got different")
 	}
 }
 

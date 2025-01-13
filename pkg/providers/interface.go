@@ -24,8 +24,13 @@ import (
 
 var (
 	m         sync.Mutex
-	providers = make(map[string]Interface)
+	providers []ProviderEntry
 )
+
+type ProviderEntry struct {
+	Name     string
+	Provider Interface
+}
 
 // Interface is what providers need to implement to participate in furnishing OIDC tokens.
 type Interface interface {
@@ -41,10 +46,12 @@ func Register(name string, p Interface) {
 	m.Lock()
 	defer m.Unlock()
 
-	if prev, ok := providers[name]; ok {
-		panic(fmt.Sprintf("duplicate provider for name %q, %T and %T", name, prev, p))
+	for _, pe := range providers {
+		if pe.Name == name {
+			panic(fmt.Sprintf("duplicate provider for name %q, %T and %T", name, pe.Provider, p))
+		}
 	}
-	providers[name] = p
+	providers = append(providers, ProviderEntry{Name: name, Provider: p})
 }
 
 // Enabled checks whether any of the registered providers are enabled in this execution context.
@@ -52,8 +59,8 @@ func Enabled(ctx context.Context) bool {
 	m.Lock()
 	defer m.Unlock()
 
-	for _, provider := range providers {
-		if provider.Enabled(ctx) {
+	for _, pe := range providers {
+		if pe.Provider.Enabled(ctx) {
 			return true
 		}
 	}
@@ -67,13 +74,14 @@ func Provide(ctx context.Context, audience string) (string, error) {
 
 	var id string
 	var err error
-	for _, provider := range providers {
-		if !provider.Enabled(ctx) {
+	for _, pe := range providers {
+		p := pe.Provider
+		if !p.Enabled(ctx) {
 			continue
 		}
-		id, err = provider.Provide(ctx, audience)
+		id, err = p.Provide(ctx, audience)
 		if err == nil {
-			return id, err
+			return id, nil
 		}
 	}
 	// return the last id/err combo, unless there wasn't an error in
@@ -85,13 +93,21 @@ func Provide(ctx context.Context, audience string) (string, error) {
 }
 
 // ProvideFrom fetches the specified provider
-func ProvideFrom(ctx context.Context, provider string) (Interface, error) {
+func ProvideFrom(_ context.Context, provider string) (Interface, error) {
 	m.Lock()
 	defer m.Unlock()
 
-	p, ok := providers[provider]
-	if !ok {
-		return nil, fmt.Errorf("%s is not a valid provider", provider)
+	for _, p := range providers {
+		if p.Name == provider {
+			return p.Provider, nil
+		}
 	}
-	return p, nil
+	return nil, fmt.Errorf("%s is not a valid provider", provider)
+}
+
+func Providers() []ProviderEntry {
+	m.Lock()
+	defer m.Unlock()
+
+	return providers
 }

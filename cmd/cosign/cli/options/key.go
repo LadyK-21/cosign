@@ -15,7 +15,7 @@
 
 package options
 
-import "github.com/sigstore/cosign/pkg/cosign"
+import "github.com/sigstore/cosign/v2/pkg/cosign"
 
 type KeyOpts struct {
 	Sk                   bool
@@ -32,13 +32,21 @@ type KeyOpts struct {
 	OIDCDisableProviders bool   // Disable OIDC credential providers in keyless signer
 	OIDCProvider         string // Specify which OIDC credential provider to use for keyless signer
 	BundlePath           string
+	NewBundleFormat      bool
 	SkipConfirmation     bool
+	TSAClientCACert      string
+	TSAClientCert        string
+	TSAClientKey         string
+	TSAServerName        string // expected SAN field in the TSA server's certificate - https://pkg.go.dev/crypto/tls#Config.ServerName
 	TSAServerURL         string
 	RFC3161TimestampPath string
 	TSACertChainPath     string
+	// IssueCertificate controls whether to issue a certificate when a key is
+	// provided.
+	IssueCertificateForExistingKey bool
 
 	// FulcioAuthFlow is the auth flow to use when authenticating against
-	// Fulcio. See https://pkg.go.dev/github.com/sigstore/cosign/cmd/cosign/cli/fulcio#pkg-constants
+	// Fulcio. See https://pkg.go.dev/github.com/sigstore/cosign/v2/cmd/cosign/cli/fulcio#pkg-constants
 	// for valid values.
 	FulcioAuthFlow string
 

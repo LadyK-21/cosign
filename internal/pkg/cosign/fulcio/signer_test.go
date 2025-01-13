@@ -18,12 +18,11 @@ import (
 	"bytes"
 	"context"
 	"crypto"
-	"encoding/base64"
 	"strings"
 	"testing"
 
-	"github.com/sigstore/cosign/internal/pkg/cosign/payload"
-	"github.com/sigstore/cosign/pkg/cosign"
+	"github.com/sigstore/cosign/v2/internal/pkg/cosign/payload"
+	"github.com/sigstore/cosign/v2/pkg/cosign"
 	"github.com/sigstore/sigstore/pkg/signature"
 )
 
@@ -112,13 +111,9 @@ func TestSigner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("signature.LoadVerifier(pub) returned error: %v", err)
 	}
-	b64Sig, err := ociSig.Base64Signature()
+	sig, err := ociSig.Signature()
 	if err != nil {
-		t.Fatalf("ociSig.Base64Signature() returned error: %v", err)
-	}
-	sig, err := base64.StdEncoding.DecodeString(b64Sig)
-	if err != nil {
-		t.Fatalf("base64.StdEncoding.DecodeString(b64Sig) returned error: %v", err)
+		t.Fatalf("ociSig.Signature() returned error: %v", err)
 	}
 	gotPayload, err := ociSig.Payload()
 	if err != nil {

@@ -22,7 +22,6 @@ set -o pipefail
 : "${GITHUB_RUN_ID:?Environment variable empty or not defined.}"
 : "${GITHUB_RUN_ATTEMPT:?Environment variable empty or not defined.}"
 
-export COSIGN_EXPERIMENTAL=1
 COSIGN_CLI=./cosign
 
 if [[ ! -f cosignImagerefs ]]; then
@@ -30,12 +29,5 @@ if [[ ! -f cosignImagerefs ]]; then
     exit 1
 fi
 
-if [[ ! -f sgetImagerefs ]]; then
-    echo "sgetImagerefs not found"
-    exit 1
-fi
-
 echo "Signing cosign images using Keyless..."
-
 $COSIGN_CLI sign -y -a sha="$GIT_HASH" -a run_id="$GITHUB_RUN_ID" -a run_attempt="$GITHUB_RUN_ATTEMPT" $(cat cosignImagerefs)
-$COSIGN_CLI sign -y -a sha="$GIT_HASH" -a run_id="$GITHUB_RUN_ID" -a run_attempt="$GITHUB_RUN_ATTEMPT" $(cat sgetImagerefs)

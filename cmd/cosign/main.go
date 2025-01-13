@@ -15,12 +15,16 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"strings"
 
-	"github.com/sigstore/cosign/cmd/cosign/cli"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli"
+	cosignError "github.com/sigstore/cosign/v2/cmd/cosign/errors"
+	"github.com/sigstore/cosign/v2/internal/ui"
 
 	// Register the provider-specific plugins
 	_ "github.com/sigstore/sigstore/pkg/signature/kms/aws"
@@ -31,6 +35,7 @@ import (
 
 func main() {
 	// Fix up flags to POSIX standard flags.
+	ctx := context.Background()
 	for i, arg := range os.Args {
 		if (strings.HasPrefix(arg, "-") && len(arg) == 2) || (strings.HasPrefix(arg, "--") && len(arg) >= 4) {
 			continue
@@ -38,9 +43,9 @@ func main() {
 		if strings.HasPrefix(arg, "--") && len(arg) == 3 {
 			// Handle --o, convert to -o
 			newArg := fmt.Sprintf("-%c", arg[2])
-			fmt.Fprintf(os.Stderr, "WARNING: the flag %s is deprecated and will be removed in a future release. Please use the flag %s.\n", arg, newArg)
+			ui.Warnf(ctx, "the flag %s is deprecated and will be removed in a future release. Please use the flag %s.", arg, newArg)
 			os.Args[i] = newArg
-		} else if strings.HasPrefix(arg, "-") {
+		} else if strings.HasPrefix(arg, "-") && len(arg) > 1 {
 			// Handle -output, convert to --output
 			newArg := fmt.Sprintf("-%s", arg)
 			newArgType := "flag"
@@ -48,10 +53,8 @@ func main() {
 				newArg = "version"
 				newArgType = "subcommand"
 			}
-			fmt.Fprintf(
-				os.Stderr,
-				"WARNING: the %s flag is deprecated and will be removed in a future release. "+
-					"Please use the %s %s instead.\n",
+			ui.Warnf(ctx, "the %s flag is deprecated and will be removed in a future release. "+
+				"Please use the %s %s instead.",
 				arg, newArg, newArgType,
 			)
 			os.Args[i] = newArg
@@ -59,6 +62,15 @@ func main() {
 	}
 
 	if err := cli.New().Execute(); err != nil {
+		// if the error is a `CosignError` then we want to use the exit code that
+		// is related to the type of error that has occurred.
+		var cosignError *cosignError.CosignError
+		if errors.As(err, &cosignError) {
+			log.Printf("error during command execution: %v", err)
+			os.Exit(cosignError.ExitCode())
+		}
+
+		// we don't call os.Exit as Fatalf does both PrintF and os.Exit(1)
 		log.Fatalf("error during command execution: %v", err)
 	}
 }

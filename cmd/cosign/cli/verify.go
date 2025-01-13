@@ -16,16 +16,19 @@
 package cli
 
 import (
+	"context"
 	"fmt"
-	"os"
 
 	"github.com/google/go-containerregistry/pkg/name"
 
 	"github.com/spf13/cobra"
 
-	"github.com/sigstore/cosign/cmd/cosign/cli/options"
-	"github.com/sigstore/cosign/cmd/cosign/cli/verify"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/options"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/verify"
+	"github.com/sigstore/cosign/v2/internal/ui"
 )
+
+const ignoreTLogMessage = "Skipping tlog verification is an insecure practice that lacks of transparency and auditability verification for the %s."
 
 func Verify() *cobra.Command {
 	o := &options.VerifyOptions{}
@@ -59,6 +62,14 @@ against the transparency log.`,
   # verify image with local certificate and certificate chain
   cosign verify --cert cosign.crt --cert-chain chain.crt <IMAGE>
 
+  # verify image with local certificate and certificate bundles of CA roots
+  # and (optionally) CA intermediates
+  cosign verify --cert cosign.crt --ca-roots ca-roots.pem --ca-intermediates ca-intermediates.pem <IMAGE>
+
+  # verify image using keyless verification with the given certificate
+  # chain and identity parameters, without Fulcio roots (for BYO PKI):
+  cosign verify --cert-chain chain.crt --certificate-oidc-issuer https://issuer.example.com --certificate-identity foo@example.com <IMAGE>
+
   # verify image with public key provided by URL
   cosign verify --key https://host.for/[FILE] <IMAGE>
 
@@ -83,6 +94,10 @@ against the transparency log.`,
 		Args:             cobra.MinimumNArgs(1),
 		PersistentPreRun: options.BindViper,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if o.CommonVerifyOptions.PrivateInfrastructure {
+				o.CommonVerifyOptions.IgnoreTlog = true
+			}
+
 			annotations, err := o.AnnotationsMap()
 			if err != nil {
 				return err
@@ -95,18 +110,18 @@ against the transparency log.`,
 
 			v := &verify.VerifyCommand{
 				RegistryOptions:              o.Registry,
+				CertVerifyOptions:            o.CertVerify,
 				CheckClaims:                  o.CheckClaims,
 				KeyRef:                       o.Key,
 				CertRef:                      o.CertVerify.Cert,
-				CertEmail:                    o.CertVerify.CertEmail,
-				CertIdentity:                 o.CertVerify.CertIdentity,
-				CertOidcIssuer:               o.CertVerify.CertOidcIssuer,
+				CertChain:                    o.CertVerify.CertChain,
+				CAIntermediates:              o.CertVerify.CAIntermediates,
+				CARoots:                      o.CertVerify.CARoots,
 				CertGithubWorkflowTrigger:    o.CertVerify.CertGithubWorkflowTrigger,
 				CertGithubWorkflowSha:        o.CertVerify.CertGithubWorkflowSha,
 				CertGithubWorkflowName:       o.CertVerify.CertGithubWorkflowName,
 				CertGithubWorkflowRepository: o.CertVerify.CertGithubWorkflowRepository,
 				CertGithubWorkflowRef:        o.CertVerify.CertGithubWorkflowRef,
-				CertChain:                    o.CertVerify.CertChain,
 				IgnoreSCT:                    o.CertVerify.IgnoreSCT,
 				SCTRef:                       o.CertVerify.SCT,
 				Sk:                           o.SecurityKey.Use,
@@ -117,21 +132,32 @@ against the transparency log.`,
 				Annotations:                  annotations,
 				HashAlgorithm:                hashAlgorithm,
 				SignatureRef:                 o.SignatureRef,
+				PayloadRef:                   o.PayloadRef,
 				LocalImage:                   o.LocalImage,
 				Offline:                      o.CommonVerifyOptions.Offline,
 				TSACertChainPath:             o.CommonVerifyOptions.TSACertChainPath,
-				SkipTlogVerify:               o.CommonVerifyOptions.SkipTlogVerify,
+				IgnoreTlog:                   o.CommonVerifyOptions.IgnoreTlog,
+				MaxWorkers:                   o.CommonVerifyOptions.MaxWorkers,
+				ExperimentalOCI11:            o.CommonVerifyOptions.ExperimentalOCI11,
+				UseSignedTimestamps:          o.CommonVerifyOptions.UseSignedTimestamps,
+			}
+
+			if o.CommonVerifyOptions.MaxWorkers == 0 {
+				return fmt.Errorf("please set the --max-worker flag to a value that is greater than 0")
 			}
 
 			if o.Registry.AllowInsecure {
 				v.NameOptions = append(v.NameOptions, name.Insecure)
 			}
 
-			if o.CommonVerifyOptions.SkipTlogVerify {
-				fmt.Fprintln(os.Stderr, "**Warning** Skipping tlog verification is an insecure practice that lacks of transparency and auditability verification for the signature.")
+			ctx, cancel := context.WithTimeout(cmd.Context(), ro.Timeout)
+			defer cancel()
+
+			if o.CommonVerifyOptions.IgnoreTlog && !o.CommonVerifyOptions.PrivateInfrastructure {
+				ui.Warnf(ctx, fmt.Sprintf(ignoreTLogMessage, "signature"))
 			}
 
-			return v.Exec(cmd.Context(), args)
+			return v.Exec(ctx, args)
 		},
 	}
 
@@ -188,14 +214,18 @@ against the transparency log.`,
 		Args:             cobra.MinimumNArgs(1),
 		PersistentPreRun: options.BindViper,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if o.CommonVerifyOptions.PrivateInfrastructure {
+				o.CommonVerifyOptions.IgnoreTlog = true
+			}
+
 			v := &verify.VerifyAttestationCommand{
 				RegistryOptions:              o.Registry,
 				CheckClaims:                  o.CheckClaims,
+				CertVerifyOptions:            o.CertVerify,
 				CertRef:                      o.CertVerify.Cert,
-				CertEmail:                    o.CertVerify.CertEmail,
-				CertIdentity:                 o.CertVerify.CertIdentity,
-				CertOidcIssuer:               o.CertVerify.CertOidcIssuer,
 				CertChain:                    o.CertVerify.CertChain,
+				CAIntermediates:              o.CertVerify.CAIntermediates,
+				CARoots:                      o.CertVerify.CARoots,
 				CertGithubWorkflowTrigger:    o.CertVerify.CertGithubWorkflowTrigger,
 				CertGithubWorkflowSha:        o.CertVerify.CertGithubWorkflowSha,
 				CertGithubWorkflowName:       o.CertVerify.CertGithubWorkflowName,
@@ -214,10 +244,23 @@ against the transparency log.`,
 				NameOptions:                  o.Registry.NameOptions(),
 				Offline:                      o.CommonVerifyOptions.Offline,
 				TSACertChainPath:             o.CommonVerifyOptions.TSACertChainPath,
-				SkipTlogVerify:               o.CommonVerifyOptions.SkipTlogVerify,
+				IgnoreTlog:                   o.CommonVerifyOptions.IgnoreTlog,
+				MaxWorkers:                   o.CommonVerifyOptions.MaxWorkers,
+				UseSignedTimestamps:          o.CommonVerifyOptions.UseSignedTimestamps,
 			}
 
-			return v.Exec(cmd.Context(), args)
+			if o.CommonVerifyOptions.MaxWorkers == 0 {
+				return fmt.Errorf("please set the --max-worker flag to a value that is greater than 0")
+			}
+
+			ctx, cancel := context.WithTimeout(cmd.Context(), ro.Timeout)
+			defer cancel()
+
+			if o.CommonVerifyOptions.IgnoreTlog && !o.CommonVerifyOptions.PrivateInfrastructure {
+				ui.Warnf(ctx, fmt.Sprintf(ignoreTLogMessage, "attestation"))
+			}
+
+			return v.Exec(ctx, args)
 		},
 	}
 
@@ -241,6 +284,12 @@ The blob may be specified as a path to a file or - for stdin.`,
 
   # Verify a simple blob and message
   cosign verify-blob --key cosign.pub (--signature <sig path>|<sig url> msg)
+
+# Verify a signature with certificate and CA certificate chain
+  cosign verify-blob --certificate cert.pem --certificate-chain certchain.pem --signature $sig <blob>
+
+  # Verify a signature with CA roots and optional intermediate certificates
+  cosign verify-blob --certificate cert.pem --ca-roots caroots.pem [--ca-intermediates caintermediates.pem] --signature $sig <blob>
 
   # Verify a signature from an environment variable
   cosign verify-blob --key cosign.pub --signature $sig msg
@@ -276,23 +325,29 @@ The blob may be specified as a path to a file or - for stdin.`,
 		Args:             cobra.ExactArgs(1),
 		PersistentPreRun: options.BindViper,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if o.CommonVerifyOptions.PrivateInfrastructure {
+				o.CommonVerifyOptions.IgnoreTlog = true
+			}
+
 			ko := options.KeyOpts{
 				KeyRef:               o.Key,
 				Sk:                   o.SecurityKey.Use,
 				Slot:                 o.SecurityKey.Slot,
 				RekorURL:             o.Rekor.URL,
 				BundlePath:           o.BundlePath,
+				NewBundleFormat:      o.NewBundleFormat,
 				RFC3161TimestampPath: o.RFC3161TimestampPath,
 				TSACertChainPath:     o.CommonVerifyOptions.TSACertChainPath,
 			}
 			verifyBlobCmd := &verify.VerifyBlobCmd{
 				KeyOpts:                      ko,
+				CertVerifyOptions:            o.CertVerify,
 				CertRef:                      o.CertVerify.Cert,
-				CertEmail:                    o.CertVerify.CertEmail,
-				CertIdentity:                 o.CertVerify.CertIdentity,
-				CertOIDCIssuer:               o.CertVerify.CertOidcIssuer,
 				CertChain:                    o.CertVerify.CertChain,
+				CARoots:                      o.CertVerify.CARoots,
+				CAIntermediates:              o.CertVerify.CAIntermediates,
 				SigRef:                       o.Signature,
+				TrustedRootPath:              o.TrustedRootPath,
 				CertGithubWorkflowTrigger:    o.CertVerify.CertGithubWorkflowTrigger,
 				CertGithubWorkflowSHA:        o.CertVerify.CertGithubWorkflowSha,
 				CertGithubWorkflowName:       o.CertVerify.CertGithubWorkflowName,
@@ -301,12 +356,18 @@ The blob may be specified as a path to a file or - for stdin.`,
 				IgnoreSCT:                    o.CertVerify.IgnoreSCT,
 				SCTRef:                       o.CertVerify.SCT,
 				Offline:                      o.CommonVerifyOptions.Offline,
-				SkipTlogVerify:               o.CommonVerifyOptions.SkipTlogVerify,
+				IgnoreTlog:                   o.CommonVerifyOptions.IgnoreTlog,
+				UseSignedTimestamps:          o.CommonVerifyOptions.UseSignedTimestamps,
 			}
-			if err := verifyBlobCmd.Exec(cmd.Context(), args[0]); err != nil {
-				return fmt.Errorf("verifying blob %s: %w", args, err)
+
+			ctx, cancel := context.WithTimeout(cmd.Context(), ro.Timeout)
+			defer cancel()
+
+			if o.CommonVerifyOptions.IgnoreTlog && !o.CommonVerifyOptions.PrivateInfrastructure {
+				ui.Warnf(ctx, fmt.Sprintf(ignoreTLogMessage, "blob"))
 			}
-			return nil
+
+			return verifyBlobCmd.Exec(ctx, args[0])
 		},
 	}
 
@@ -332,18 +393,62 @@ The blob may be specified as a path to a file.`,
 
 `,
 
-		Args:             cobra.ExactArgs(1),
+		Args:             cobra.MaximumNArgs(1),
 		PersistentPreRun: options.BindViper,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			v := verify.VerifyBlobAttestationCommand{
-				KeyRef:        o.Key,
-				PredicateType: o.PredicateOptions.Type,
-				SignaturePath: o.SignaturePath,
+			if o.CommonVerifyOptions.PrivateInfrastructure {
+				o.CommonVerifyOptions.IgnoreTlog = true
 			}
-			if len(args) != 1 {
+
+			ko := options.KeyOpts{
+				KeyRef:               o.Key,
+				Sk:                   o.SecurityKey.Use,
+				Slot:                 o.SecurityKey.Slot,
+				RekorURL:             o.Rekor.URL,
+				BundlePath:           o.BundlePath,
+				NewBundleFormat:      o.NewBundleFormat,
+				RFC3161TimestampPath: o.RFC3161TimestampPath,
+				TSACertChainPath:     o.CommonVerifyOptions.TSACertChainPath,
+			}
+			v := verify.VerifyBlobAttestationCommand{
+				KeyOpts:                      ko,
+				PredicateType:                o.PredicateOptions.Type,
+				CheckClaims:                  o.CheckClaims,
+				SignaturePath:                o.SignaturePath,
+				CertVerifyOptions:            o.CertVerify,
+				TrustedRootPath:              o.TrustedRootPath,
+				CertRef:                      o.CertVerify.Cert,
+				CertChain:                    o.CertVerify.CertChain,
+				CARoots:                      o.CertVerify.CARoots,
+				CAIntermediates:              o.CertVerify.CAIntermediates,
+				CertGithubWorkflowTrigger:    o.CertVerify.CertGithubWorkflowTrigger,
+				CertGithubWorkflowSHA:        o.CertVerify.CertGithubWorkflowSha,
+				CertGithubWorkflowName:       o.CertVerify.CertGithubWorkflowName,
+				CertGithubWorkflowRepository: o.CertVerify.CertGithubWorkflowRepository,
+				CertGithubWorkflowRef:        o.CertVerify.CertGithubWorkflowRef,
+				IgnoreSCT:                    o.CertVerify.IgnoreSCT,
+				SCTRef:                       o.CertVerify.SCT,
+				Offline:                      o.CommonVerifyOptions.Offline,
+				IgnoreTlog:                   o.CommonVerifyOptions.IgnoreTlog,
+				UseSignedTimestamps:          o.CommonVerifyOptions.UseSignedTimestamps,
+			}
+			// We only use the blob if we are checking claims.
+			if len(args) == 0 && o.CheckClaims {
 				return fmt.Errorf("no path to blob passed in, run `cosign verify-blob-attestation -h` for more help")
 			}
-			return v.Exec(cmd.Context(), args[0])
+			var path string
+			if len(args) > 0 {
+				path = args[0]
+			}
+
+			ctx, cancel := context.WithTimeout(cmd.Context(), ro.Timeout)
+			defer cancel()
+
+			if o.CommonVerifyOptions.IgnoreTlog && !o.CommonVerifyOptions.PrivateInfrastructure {
+				ui.Warnf(ctx, fmt.Sprintf(ignoreTLogMessage, "blob attestation"))
+			}
+
+			return v.Exec(ctx, path)
 		},
 	}
 

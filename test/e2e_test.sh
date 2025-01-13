@@ -16,56 +16,103 @@
 
 set -ex
 
-echo "copying rekor repo"
+docker_compose="docker compose"
+if ! ${docker_compose} version >/dev/null 2>&1; then
+    docker_compose="docker-compose"
+fi
+
+echo "setting up OIDC provider"
+pushd ./test/fakeoidc
+oidcimg=$(ko build main.go --local)
+docker network ls | grep fulcio_default || docker network create fulcio_default --label "com.docker.compose.network=fulcio_default"
+docker run -d --rm -p 8080:8080 --network fulcio_default --name fakeoidc $oidcimg
+cleanup_oidc() {
+    echo "cleaning up oidc"
+    docker stop fakeoidc
+}
+trap cleanup_oidc EXIT
+oidc_ip=$(docker inspect fakeoidc | jq -r '.[0].NetworkSettings.Networks.fulcio_default.IPAddress')
+export OIDC_URL="http://${oidc_ip}:8080"
+cat <<EOF > /tmp/fulcio-config.json
+{
+  "OIDCIssuers": {
+    "$OIDC_URL": {
+      "IssuerURL": "$OIDC_URL",
+      "ClientID": "sigstore",
+      "Type": "email"
+    }
+  }
+}
+EOF
+popd
+
 pushd $HOME
-git clone https://github.com/sigstore/rekor.git
-cd rekor
 
-echo "starting services"
-docker-compose up -d
-
-count=0
-
-echo -n "waiting up to 60 sec for system to start"
-until [ $(docker-compose ps | grep -c "(healthy)") == 3 ];
-do
-    if [ $count -eq 6 ]; then
-       echo "! timeout reached"
-       exit 1
+echo "downloading service repos"
+for repo in rekor fulcio; do
+    if [[ ! -d $repo ]]; then
+        git clone https://github.com/sigstore/${repo}.git
     else
-       echo -n "."
-       sleep 10
-       let 'count+=1'
+        pushd $repo
+        git pull
+        popd
     fi
 done
+
+echo "starting services"
+export FULCIO_METRICS_PORT=2113
+export FULCIO_CONFIG=/tmp/fulcio-config.json
+for repo in rekor fulcio; do
+    pushd $repo
+    if [ "$repo" == "fulcio" ]; then
+       yq -i e '.networks={"default":{ "name":"fulcio_default","external":true }}' docker-compose.yml
+       yq -i e '.services.fulcio-server.networks=["default"]' docker-compose.yml
+    fi
+    ${docker_compose} up -d
+    echo -n "waiting up to 60 sec for system to start"
+    count=0
+    until [ $(${docker_compose} ps | grep -c "(healthy)") == 3 ];
+    do
+        if [ $count -eq 6 ]; then
+           echo "! timeout reached"
+           exit 1
+        else
+           echo -n "."
+           sleep 10
+           let 'count+=1'
+        fi
+    done
+    popd
+done
+cleanup_services() {
+    echo "cleaning up"
+    cleanup_oidc
+    for repo in rekor fulcio; do
+        pushd $HOME/$repo
+        ${docker_compose} down
+        popd
+    done
+}
+trap cleanup_services EXIT
 
 echo
 echo "running tests"
 
 popd
-go build -o cosign ./cmd/cosign
-go test -tags=e2e -race $(go list ./... | grep -v third_party/)
+go test -tags=e2e -v -race ./test/...
 
-# Test `cosign dockerfile verify`
-export COSIGN_EXPERIMENTAL=true
-./cosign dockerfile verify ./test/testdata/single_stage.Dockerfile
-if (./cosign dockerfile verify ./test/testdata/unsigned_build_stage.Dockerfile); then false; fi
-./cosign dockerfile verify --base-image-only ./test/testdata/unsigned_build_stage.Dockerfile
-./cosign dockerfile verify ./test/testdata/fancy_from.Dockerfile
-test_image="ghcr.io/distroless/alpine-base" ./cosign dockerfile verify ./test/testdata/with_arg.Dockerfile
-# Image exists, but is unsigned
-if (test_image="ubuntu" ./cosign dockerfile verify ./test/testdata/with_arg.Dockerfile); then false; fi
-./cosign dockerfile verify ./test/testdata/with_lowercase.Dockerfile
-
-# Test `cosign manifest verify`
-./cosign manifest verify ./test/testdata/signed_manifest.yaml
-if (./cosign manifest verify ./test/testdata/unsigned_manifest.yaml); then false; fi
+# Test on a private registry
+echo "testing sign/verify/clean on private registry"
+cleanup() {
+    cleanup_services
+    docker rm -f registry
+}
+trap cleanup EXIT
+docker run -d -p 5000:5000 --restart always -e REGISTRY_STORAGE_DELETE_ENABLED=true --name registry registry:latest
+export COSIGN_TEST_REPO=localhost:5000
+go test -tags=e2e -v ./test/... -run TestSignVerifyClean
 
 # Run the built container to make sure it doesn't crash
 make ko-local
 img="ko.local/cosign:$(git rev-parse HEAD)"
 docker run $img version
-
-echo "cleanup"
-cd $HOME/rekor
-docker-compose down

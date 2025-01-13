@@ -21,10 +21,10 @@ import (
 	"fmt"
 
 	"github.com/google/go-containerregistry/pkg/name"
-	"github.com/sigstore/cosign/cmd/cosign/cli/options"
-	"github.com/sigstore/cosign/pkg/oci"
-	"github.com/sigstore/cosign/pkg/oci/layout"
-	ociremote "github.com/sigstore/cosign/pkg/oci/remote"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/options"
+	"github.com/sigstore/cosign/v2/pkg/oci"
+	"github.com/sigstore/cosign/v2/pkg/oci/layout"
+	ociremote "github.com/sigstore/cosign/v2/pkg/oci/remote"
 	"github.com/spf13/cobra"
 )
 
@@ -48,18 +48,24 @@ func Save() *cobra.Command {
 }
 
 func SaveCmd(ctx context.Context, opts options.SaveOptions, imageRef string) error {
-	ref, err := name.ParseReference(imageRef)
+	regOpts := opts.Registry
+	regClientOpts, err := regOpts.ClientOpts(ctx)
+	if err != nil {
+		return fmt.Errorf("constructing client options: %w", err)
+	}
+
+	ref, err := name.ParseReference(imageRef, opts.Registry.NameOptions()...)
 	if err != nil {
 		return fmt.Errorf("parsing image name %s: %w", imageRef, err)
 	}
 
-	se, err := ociremote.SignedEntity(ref)
+	se, err := ociremote.SignedEntity(ref, regClientOpts...)
 	if err != nil {
 		return fmt.Errorf("signed entity: %w", err)
 	}
 
 	if _, ok := se.(oci.SignedImage); ok {
-		si, err := ociremote.SignedImage(ref)
+		si, err := ociremote.SignedImage(ref, regClientOpts...)
 		if err != nil {
 			return fmt.Errorf("getting signed image: %w", err)
 		}
@@ -67,7 +73,7 @@ func SaveCmd(ctx context.Context, opts options.SaveOptions, imageRef string) err
 	}
 
 	if _, ok := se.(oci.SignedImageIndex); ok {
-		sii, err := ociremote.SignedImageIndex(ref)
+		sii, err := ociremote.SignedImageIndex(ref, regClientOpts...)
 		if err != nil {
 			return fmt.Errorf("getting signed image index: %w", err)
 		}

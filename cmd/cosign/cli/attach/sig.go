@@ -17,21 +17,22 @@ package attach
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
 	"path/filepath"
 
 	"github.com/google/go-containerregistry/pkg/name"
-
-	"github.com/sigstore/cosign/cmd/cosign/cli/options"
-	"github.com/sigstore/cosign/pkg/oci/mutate"
-	ociremote "github.com/sigstore/cosign/pkg/oci/remote"
-	"github.com/sigstore/cosign/pkg/oci/static"
-	sigPayload "github.com/sigstore/sigstore/pkg/signature/payload"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/options"
+	"github.com/sigstore/cosign/v2/pkg/cosign"
+	"github.com/sigstore/cosign/v2/pkg/cosign/bundle"
+	"github.com/sigstore/cosign/v2/pkg/oci/mutate"
+	ociremote "github.com/sigstore/cosign/v2/pkg/oci/remote"
+	"github.com/sigstore/cosign/v2/pkg/oci/static"
 )
 
-func SignatureCmd(ctx context.Context, regOpts options.RegistryOptions, sigRef, payloadRef, imageRef string) error {
+func SignatureCmd(ctx context.Context, regOpts options.RegistryOptions, sigRef, payloadRef, certRef, certChainRef, timeStampedSigRef, rekorBundleRef, imageRef string) error {
 	b64SigBytes, err := signatureBytes(sigRef)
 	if err != nil {
 		return err
@@ -58,7 +59,7 @@ func SignatureCmd(ctx context.Context, regOpts options.RegistryOptions, sigRef, 
 
 	var payload []byte
 	if payloadRef == "" {
-		payload, err = (&sigPayload.Cosign{Image: digest}).MarshalJSON()
+		payload, err = cosign.ObsoletePayload(ctx, digest)
 	} else {
 		payload, err = os.ReadFile(filepath.Clean(payloadRef))
 	}
@@ -71,13 +72,60 @@ func SignatureCmd(ctx context.Context, regOpts options.RegistryOptions, sigRef, 
 		return err
 	}
 
+	var cert []byte
+	var certChain []byte
+	var timeStampedSig []byte
+	var rekorBundle *bundle.RekorBundle
+
+	if certRef != "" {
+		cert, err = os.ReadFile(filepath.Clean(certRef))
+		if err != nil {
+			return err
+		}
+	}
+
+	if certChainRef != "" {
+		certChain, err = os.ReadFile(filepath.Clean(certChainRef))
+		if err != nil {
+			return err
+		}
+	}
+
+	if timeStampedSigRef != "" {
+		timeStampedSig, err = os.ReadFile(filepath.Clean(timeStampedSigRef))
+		if err != nil {
+			return err
+		}
+	}
+	tsBundle := bundle.TimestampToRFC3161Timestamp(timeStampedSig)
+
+	if rekorBundleRef != "" {
+		rekorBundleByte, err := os.ReadFile(filepath.Clean(rekorBundleRef))
+		if err != nil {
+			return err
+		}
+
+		var localCosignPayload cosign.LocalSignedPayload
+		err = json.Unmarshal(rekorBundleByte, &localCosignPayload)
+		if err != nil {
+			return err
+		}
+
+		rekorBundle = localCosignPayload.Bundle
+	}
+
+	newSig, err := mutate.Signature(sig, mutate.WithCertChain(cert, certChain), mutate.WithRFC3161Timestamp(tsBundle), mutate.WithBundle(rekorBundle))
+	if err != nil {
+		return err
+	}
+
 	se, err := ociremote.SignedEntity(digest, ociremoteOpts...)
 	if err != nil {
 		return err
 	}
 
 	// Attach the signature to the entity.
-	newSE, err := mutate.AttachSignatureToEntity(se, sig)
+	newSE, err := mutate.AttachSignatureToEntity(se, newSig)
 	if err != nil {
 		return err
 	}
@@ -112,14 +160,7 @@ func signatureType(sigRef string) SignatureArgType {
 	switch {
 	case sigRef == "-":
 		return StdinSignature
-	case signatureFileNotExists(sigRef):
-		return RawSignature
 	default:
 		return FileSignature
 	}
-}
-
-func signatureFileNotExists(sigRef string) bool {
-	_, err := os.Stat(sigRef)
-	return os.IsNotExist(err)
 }

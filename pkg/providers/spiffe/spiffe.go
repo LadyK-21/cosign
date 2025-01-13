@@ -21,8 +21,8 @@ import (
 
 	"github.com/spiffe/go-spiffe/v2/svid/jwtsvid"
 
-	"github.com/sigstore/cosign/pkg/cosign/env"
-	"github.com/sigstore/cosign/pkg/providers"
+	"github.com/sigstore/cosign/v2/pkg/cosign/env"
+	"github.com/sigstore/cosign/v2/pkg/providers"
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
 )
 
@@ -51,7 +51,7 @@ func getSocketPath() string {
 }
 
 // Enabled implements providers.Interface
-func (ga *spiffe) Enabled(ctx context.Context) bool {
+func (ga *spiffe) Enabled(_ context.Context) bool {
 	// If we can stat the file without error then this is enabled.
 	_, err := os.Stat(getSocketPath())
 	return err == nil

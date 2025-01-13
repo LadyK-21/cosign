@@ -17,17 +17,16 @@ package signature
 import (
 	"context"
 	"crypto"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"strings"
 
-	"github.com/sigstore/cosign/pkg/blob"
-	"github.com/sigstore/cosign/pkg/cosign"
-	"github.com/sigstore/cosign/pkg/cosign/git"
-	"github.com/sigstore/cosign/pkg/cosign/git/gitlab"
-	"github.com/sigstore/cosign/pkg/cosign/kubernetes"
-	"github.com/sigstore/cosign/pkg/cosign/pkcs11key"
+	"github.com/sigstore/cosign/v2/pkg/blob"
+	"github.com/sigstore/cosign/v2/pkg/cosign"
+	"github.com/sigstore/cosign/v2/pkg/cosign/git"
+	"github.com/sigstore/cosign/v2/pkg/cosign/git/gitlab"
+	"github.com/sigstore/cosign/v2/pkg/cosign/kubernetes"
+	"github.com/sigstore/cosign/v2/pkg/cosign/pkcs11key"
 	"github.com/sigstore/sigstore/pkg/cryptoutils"
 	"github.com/sigstore/sigstore/pkg/signature"
 
@@ -233,19 +232,4 @@ func PublicKeyPem(key signature.PublicKeyProvider, pkOpts ...signature.PublicKey
 		return nil, err
 	}
 	return cryptoutils.MarshalPublicKeyToPEM(pub)
-}
-
-func CertSubject(c *x509.Certificate) string {
-	switch {
-	case c.EmailAddresses != nil:
-		return c.EmailAddresses[0]
-	case c.URIs != nil:
-		return c.URIs[0].String()
-	}
-	// ignore error if there's no OtherName SAN
-	otherName, _ := cryptoutils.UnmarshalOtherNameSAN(c.Extensions)
-	if len(otherName) > 0 {
-		return otherName
-	}
-	return ""
 }

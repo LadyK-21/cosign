@@ -18,14 +18,17 @@ package download
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/google/go-containerregistry/pkg/name"
-	"github.com/sigstore/cosign/cmd/cosign/cli/options"
-	"github.com/sigstore/cosign/pkg/cosign"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/options"
+	"github.com/sigstore/cosign/v2/pkg/cosign"
+	"github.com/sigstore/cosign/v2/pkg/oci/platform"
+	ociremote "github.com/sigstore/cosign/v2/pkg/oci/remote"
 )
 
-func AttestationCmd(ctx context.Context, regOpts options.RegistryOptions, imageRef string) error {
+func AttestationCmd(ctx context.Context, regOpts options.RegistryOptions, attOptions options.AttestationDownloadOptions, imageRef string) error {
 	ref, err := name.ParseReference(imageRef, regOpts.NameOptions()...)
 	if err != nil {
 		return err
@@ -34,10 +37,40 @@ func AttestationCmd(ctx context.Context, regOpts options.RegistryOptions, imageR
 	if err != nil {
 		return err
 	}
-	attestations, err := cosign.FetchAttestationsForReference(ctx, ref, ociremoteOpts...)
+
+	var predicateType string
+	if attOptions.PredicateType != "" {
+		predicateType, err = options.ParsePredicateType(attOptions.PredicateType)
+		if err != nil {
+			return err
+		}
+	}
+
+	se, err := ociremote.SignedEntity(ref, ociremoteOpts...)
+	var entityNotFoundError *ociremote.EntityNotFoundError
+	if err != nil {
+		if errors.As(err, &entityNotFoundError) {
+			if digest, ok := ref.(name.Digest); ok {
+				// We don't need to access the original image to download the attached attestation
+				se = ociremote.SignedUnknown(digest)
+			} else {
+				return err
+			}
+		} else {
+			return err
+		}
+	}
+
+	se, err = platform.SignedEntityForPlatform(se, attOptions.Platform)
 	if err != nil {
 		return err
 	}
+
+	attestations, err := cosign.FetchAttestations(se, predicateType)
+	if err != nil {
+		return err
+	}
+
 	for _, att := range attestations {
 		b, err := json.Marshal(att)
 		if err != nil {

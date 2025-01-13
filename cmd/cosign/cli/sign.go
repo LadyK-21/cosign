@@ -17,12 +17,13 @@ package cli
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
-	"github.com/sigstore/cosign/cmd/cosign/cli/generate"
-	"github.com/sigstore/cosign/cmd/cosign/cli/options"
-	"github.com/sigstore/cosign/cmd/cosign/cli/sign"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/generate"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/options"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/sign"
 )
 
 func Sign() *cobra.Command {
@@ -79,13 +80,21 @@ race conditions or (worse) malicious tampering.
   cosign sign --key cosign.key <IMAGE DIGEST>
 
   # sign a container image and skip uploading to the transparency log
-  cosign sign --key cosign.key --tlog-upload=false <IMAGE DIGEST>`,
+  cosign sign --key cosign.key --tlog-upload=false <IMAGE DIGEST>
+
+  # sign a container image by manually setting the container image identity
+  cosign sign --sign-container-identity <NEW IMAGE DIGEST> <IMAGE DIGEST>
+
+  # sign a container image and honor the creation timestamp of the signature
+  cosign sign --key cosign.key --record-creation-timestamp <IMAGE DIGEST>`,
 
 		Args:             cobra.MinimumNArgs(1),
 		PersistentPreRun: options.BindViper,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			switch o.Attachment {
-			case "sbom", "":
+			case "sbom":
+				fmt.Fprintln(os.Stderr, options.SBOMAttachmentDeprecation)
+			case "":
 				break
 			default:
 				return fmt.Errorf("specified image attachment %s not specified. Can be 'sbom'", o.Attachment)
@@ -95,22 +104,28 @@ race conditions or (worse) malicious tampering.
 				return err
 			}
 			ko := options.KeyOpts{
-				KeyRef:                   o.Key,
-				PassFunc:                 generate.GetPass,
-				Sk:                       o.SecurityKey.Use,
-				Slot:                     o.SecurityKey.Slot,
-				FulcioURL:                o.Fulcio.URL,
-				IDToken:                  o.Fulcio.IdentityToken,
-				InsecureSkipFulcioVerify: o.Fulcio.InsecureSkipFulcioVerify,
-				RekorURL:                 o.Rekor.URL,
-				OIDCIssuer:               o.OIDC.Issuer,
-				OIDCClientID:             o.OIDC.ClientID,
-				OIDCClientSecret:         oidcClientSecret,
-				OIDCRedirectURL:          o.OIDC.RedirectURL,
-				OIDCDisableProviders:     o.OIDC.DisableAmbientProviders,
-				OIDCProvider:             o.OIDC.Provider,
-				SkipConfirmation:         o.SkipConfirmation,
-				TSAServerURL:             o.TSAServerURL,
+				KeyRef:                         o.Key,
+				PassFunc:                       generate.GetPass,
+				Sk:                             o.SecurityKey.Use,
+				Slot:                           o.SecurityKey.Slot,
+				FulcioURL:                      o.Fulcio.URL,
+				IDToken:                        o.Fulcio.IdentityToken,
+				FulcioAuthFlow:                 o.Fulcio.AuthFlow,
+				InsecureSkipFulcioVerify:       o.Fulcio.InsecureSkipFulcioVerify,
+				RekorURL:                       o.Rekor.URL,
+				OIDCIssuer:                     o.OIDC.Issuer,
+				OIDCClientID:                   o.OIDC.ClientID,
+				OIDCClientSecret:               oidcClientSecret,
+				OIDCRedirectURL:                o.OIDC.RedirectURL,
+				OIDCDisableProviders:           o.OIDC.DisableAmbientProviders,
+				OIDCProvider:                   o.OIDC.Provider,
+				SkipConfirmation:               o.SkipConfirmation,
+				TSAClientCACert:                o.TSAClientCACert,
+				TSAClientCert:                  o.TSAClientCert,
+				TSAClientKey:                   o.TSAClientKey,
+				TSAServerName:                  o.TSAServerName,
+				TSAServerURL:                   o.TSAServerURL,
+				IssueCertificateForExistingKey: o.IssueCertificate,
 			}
 			if err := sign.SignCmd(ro, ko, *o, args); err != nil {
 				if o.Attachment == "" {

@@ -19,9 +19,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/sigstore/cosign/cmd/cosign/cli/generate"
-	"github.com/sigstore/cosign/cmd/cosign/cli/options"
-	"github.com/sigstore/cosign/cmd/cosign/cli/sign"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/generate"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/options"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/sign"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -41,6 +41,9 @@ func SignBlob() *cobra.Command {
   # sign a blob with a local key pair file
   cosign sign-blob --key cosign.key <FILE>
 
+  # sign a blob with a key stored in an environment variable
+  cosign sign-blob --key env://[ENV_VAR] <FILE>
+
   # sign a blob with a key pair stored in Azure Key Vault
   cosign sign-blob --key azurekms://[VAULT_NAME][VAULT_URI]/[KEY] <FILE>
 
@@ -54,35 +57,42 @@ func SignBlob() *cobra.Command {
   cosign sign-blob --key hashivault://[KEY] <FILE>`,
 		Args:             cobra.MinimumNArgs(1),
 		PersistentPreRun: options.BindViper,
-		PreRunE: func(cmd *cobra.Command, args []string) error {
+		PreRunE: func(_ *cobra.Command, _ []string) error {
 			if options.NOf(o.Key, o.SecurityKey.Use) > 1 {
 				return &options.KeyParseError{}
 			}
 			return nil
 		},
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			oidcClientSecret, err := o.OIDC.ClientSecret()
 			if err != nil {
 				return err
 			}
 			ko := options.KeyOpts{
-				KeyRef:                   o.Key,
-				PassFunc:                 generate.GetPass,
-				Sk:                       o.SecurityKey.Use,
-				Slot:                     o.SecurityKey.Slot,
-				FulcioURL:                o.Fulcio.URL,
-				IDToken:                  o.Fulcio.IdentityToken,
-				InsecureSkipFulcioVerify: o.Fulcio.InsecureSkipFulcioVerify,
-				RekorURL:                 o.Rekor.URL,
-				OIDCIssuer:               o.OIDC.Issuer,
-				OIDCClientID:             o.OIDC.ClientID,
-				OIDCClientSecret:         oidcClientSecret,
-				OIDCRedirectURL:          o.OIDC.RedirectURL,
-				OIDCDisableProviders:     o.OIDC.DisableAmbientProviders,
-				BundlePath:               o.BundlePath,
-				SkipConfirmation:         o.SkipConfirmation,
-				TSAServerURL:             o.TSAServerURL,
-				RFC3161TimestampPath:     o.RFC3161TimestampPath,
+				KeyRef:                         o.Key,
+				PassFunc:                       generate.GetPass,
+				Sk:                             o.SecurityKey.Use,
+				Slot:                           o.SecurityKey.Slot,
+				FulcioURL:                      o.Fulcio.URL,
+				IDToken:                        o.Fulcio.IdentityToken,
+				FulcioAuthFlow:                 o.Fulcio.AuthFlow,
+				InsecureSkipFulcioVerify:       o.Fulcio.InsecureSkipFulcioVerify,
+				RekorURL:                       o.Rekor.URL,
+				OIDCIssuer:                     o.OIDC.Issuer,
+				OIDCClientID:                   o.OIDC.ClientID,
+				OIDCClientSecret:               oidcClientSecret,
+				OIDCRedirectURL:                o.OIDC.RedirectURL,
+				OIDCDisableProviders:           o.OIDC.DisableAmbientProviders,
+				BundlePath:                     o.BundlePath,
+				NewBundleFormat:                o.NewBundleFormat,
+				SkipConfirmation:               o.SkipConfirmation,
+				TSAClientCACert:                o.TSAClientCACert,
+				TSAClientCert:                  o.TSAClientCert,
+				TSAClientKey:                   o.TSAClientKey,
+				TSAServerName:                  o.TSAServerName,
+				TSAServerURL:                   o.TSAServerURL,
+				RFC3161TimestampPath:           o.RFC3161TimestampPath,
+				IssueCertificateForExistingKey: o.IssueCertificate,
 			}
 
 			for _, blob := range args {

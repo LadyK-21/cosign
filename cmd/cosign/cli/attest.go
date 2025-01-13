@@ -20,9 +20,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/sigstore/cosign/cmd/cosign/cli/attest"
-	"github.com/sigstore/cosign/cmd/cosign/cli/generate"
-	"github.com/sigstore/cosign/cmd/cosign/cli/options"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/attest"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/generate"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/options"
 )
 
 func Attest() *cobra.Command {
@@ -31,7 +31,7 @@ func Attest() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "attest",
 		Short: "Attest the supplied container image.",
-		Example: `  cosign attest --key <key path>|<kms uri> [--predicate <path>] [--a key=value] [--no-upload=true|false] [--f] [--r] <image uri>
+		Example: `  cosign attest --key <key path>|<kms uri> [--predicate <path>] [--a key=value] [--no-upload=true|false] [--record-creation-timestamp=true|false] [--f] [--r] <image uri>
 
   # attach an attestation to a container image Google sign-in
   cosign attest --timeout 90s --predicate <FILE> --type <TYPE> <IMAGE>
@@ -55,7 +55,13 @@ func Attest() *cobra.Command {
   cosign attest --predicate <FILE> --type <TYPE> --key cosign.key --cert cosign.crt --cert-chain chain.crt <IMAGE>
 
   # attach an attestation to a container image which does not fully support OCI media types
-  COSIGN_DOCKER_MEDIA_TYPES=1 cosign attest --predicate <FILE> --type <TYPE> --key cosign.key legacy-registry.example.com/my/image`,
+  COSIGN_DOCKER_MEDIA_TYPES=1 cosign attest --predicate <FILE> --type <TYPE> --key cosign.key legacy-registry.example.com/my/image
+
+  # supply attestation via stdin
+  echo <PAYLOAD> | cosign attest --predicate - <IMAGE>
+
+  # attach an attestation to a container image and honor the creation timestamp of the signature
+  cosign attest --predicate <FILE> --type <TYPE> --key cosign.key --record-creation-timestamp <IMAGE>`,
 
 		Args:             cobra.MinimumNArgs(1),
 		PersistentPreRun: options.BindViper,
@@ -71,6 +77,7 @@ func Attest() *cobra.Command {
 				Slot:                     o.SecurityKey.Slot,
 				FulcioURL:                o.Fulcio.URL,
 				IDToken:                  o.Fulcio.IdentityToken,
+				FulcioAuthFlow:           o.Fulcio.AuthFlow,
 				InsecureSkipFulcioVerify: o.Fulcio.InsecureSkipFulcioVerify,
 				RekorURL:                 o.Rekor.URL,
 				OIDCIssuer:               o.OIDC.Issuer,
@@ -82,16 +89,18 @@ func Attest() *cobra.Command {
 				TSAServerURL:             o.TSAServerURL,
 			}
 			attestCommand := attest.AttestCommand{
-				KeyOpts:         ko,
-				RegistryOptions: o.Registry,
-				CertPath:        o.Cert,
-				CertChainPath:   o.CertChain,
-				NoUpload:        o.NoUpload,
-				PredicatePath:   o.Predicate.Path,
-				PredicateType:   o.Predicate.Type,
-				Replace:         o.Replace,
-				Timeout:         ro.Timeout,
-				TlogUpload:      o.TlogUpload,
+				KeyOpts:                 ko,
+				RegistryOptions:         o.Registry,
+				CertPath:                o.Cert,
+				CertChainPath:           o.CertChain,
+				NoUpload:                o.NoUpload,
+				PredicatePath:           o.Predicate.Path,
+				PredicateType:           o.Predicate.Type,
+				Replace:                 o.Replace,
+				Timeout:                 ro.Timeout,
+				TlogUpload:              o.TlogUpload,
+				RekorEntryType:          o.RekorEntryType,
+				RecordCreationTimestamp: o.RecordCreationTimestamp,
 			}
 
 			for _, img := range args {

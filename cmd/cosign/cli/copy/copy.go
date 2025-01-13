@@ -20,20 +20,25 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"runtime"
+	"strings"
 
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
-	"github.com/sigstore/cosign/cmd/cosign/cli/options"
-	"github.com/sigstore/cosign/pkg/oci"
-	ociremote "github.com/sigstore/cosign/pkg/oci/remote"
-	"github.com/sigstore/cosign/pkg/oci/walk"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/options"
+	"github.com/sigstore/cosign/v2/pkg/oci"
+	ociplatform "github.com/sigstore/cosign/v2/pkg/oci/platform"
+	ociremote "github.com/sigstore/cosign/v2/pkg/oci/remote"
+	"github.com/sigstore/cosign/v2/pkg/oci/walk"
+	"golang.org/x/sync/errgroup"
+	"k8s.io/apimachinery/pkg/util/sets"
 )
 
 // CopyCmd implements the logic to copy the supplied container image and signatures.
 // nolint
-func CopyCmd(ctx context.Context, regOpts options.RegistryOptions, srcImg, dstImg string, sigOnly, force bool) error {
+func CopyCmd(ctx context.Context, regOpts options.RegistryOptions, srcImg, dstImg string, sigOnly, force bool, copyOnly, platform string) error {
 	no := regOpts.NameOptions()
 	srcRef, err := name.ParseReference(srcImg, no...)
 	if err != nil {
@@ -47,57 +52,99 @@ func CopyCmd(ctx context.Context, regOpts options.RegistryOptions, srcImg, dstIm
 	}
 	dstRepoRef := dstRef.Context()
 
-	remoteOpts := regOpts.GetRegistryClientOpts(ctx)
-	root, err := ociremote.SignedEntity(srcRef, ociremote.WithRemoteOptions(remoteOpts...))
+	ociRemoteOpts, err := regOpts.ClientOpts(ctx)
 	if err != nil {
 		return err
 	}
 
-	if err := walk.SignedEntity(ctx, root, func(ctx context.Context, se oci.SignedEntity) error {
+	remoteOpts := regOpts.GetRegistryClientOpts(ctx)
+
+	pusher, err := remote.NewPusher(remoteOpts...)
+	if err != nil {
+		return err
+	}
+
+	ociRemoteOpts = append(ociRemoteOpts, ociremote.WithRemoteOptions(remoteOpts...))
+
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(runtime.GOMAXPROCS(0))
+
+	root, err := ociremote.SignedEntity(srcRef, ociRemoteOpts...)
+	if err != nil {
+		return err
+	}
+
+	root, err = ociplatform.SignedEntityForPlatform(root, platform)
+	if err != nil {
+		return err
+	}
+
+	onlyFlagSet := false
+	tags, err := parseOnlyOpt(copyOnly, sigOnly)
+	if err != nil {
+		return err
+	}
+	if len(tags) > 0 {
+		onlyFlagSet = true
+	} else {
+		tags = []tagMap{ociremote.SignatureTag, ociremote.AttestationTag, ociremote.SBOMTag}
+	}
+	if err := walk.SignedEntity(gctx, root, func(ctx context.Context, se oci.SignedEntity) error {
 		// Both of the SignedEntity types implement Digest()
-		h, err := se.(interface{ Digest() (v1.Hash, error) }).Digest()
+		h, err := se.Digest()
 		if err != nil {
 			return err
 		}
 		srcDigest := srcRepoRef.Digest(h.String())
 
-		// Copy signatures.
-		if err := copyTagImage(ociremote.SignatureTag, srcDigest, dstRepoRef, force, remoteOpts...); err != nil {
-			return err
-		}
-		if sigOnly {
+		copyTag := func(tm tagMap) error {
+			src, err := tm(srcDigest, ociRemoteOpts...)
+			if err != nil {
+				return err
+			}
+
+			dst := dstRepoRef.Tag(src.Identifier())
+			g.Go(func() error {
+				return remoteCopy(ctx, pusher, src, dst, force, remoteOpts...)
+			})
+
 			return nil
 		}
 
-		// Copy attestations
-		if err := copyTagImage(ociremote.AttestationTag, srcDigest, dstRepoRef, force, remoteOpts...); err != nil {
-			return err
-		}
-
-		// Copy SBOMs
-		if err := copyTagImage(ociremote.SBOMTag, srcDigest, dstRepoRef, force, remoteOpts...); err != nil {
-			return err
+		for _, tm := range tags {
+			if err := copyTag(tm); err != nil {
+				return err
+			}
 		}
 
 		// Copy the entity itself.
-		if err := copyImage(srcDigest, dstRepoRef.Tag(srcDigest.Identifier()), force, remoteOpts...); err != nil {
-			return err
-		}
+		g.Go(func() error {
+			dst := dstRepoRef.Tag(srcDigest.Identifier())
+			dst = dst.Tag(fmt.Sprint(regOpts.RefOpts.TagPrefix, h.Algorithm, "-", h.Hex))
+			return remoteCopy(ctx, pusher, srcDigest, dst, force, remoteOpts...)
+		})
 
 		return nil
 	}); err != nil {
 		return err
 	}
-	if sigOnly {
+
+	// Wait for everything to be copied over.
+	if err := g.Wait(); err != nil {
+		return err
+	}
+
+	// If we're only copying sig/att/sbom, we have nothing left to do.
+	if onlyFlagSet {
 		return nil
 	}
 
 	// Now that everything has been copied over, update the tag.
-	h, err := root.(interface{ Digest() (v1.Hash, error) }).Digest()
+	h, err := root.Digest()
 	if err != nil {
 		return err
 	}
-	return copyImage(srcRepoRef.Digest(h.String()), dstRef, force, remoteOpts...)
+	return remoteCopy(ctx, pusher, srcRepoRef.Digest(h.String()), dstRef, force, remoteOpts...)
 }
 
 func descriptorsEqual(a, b *v1.Descriptor) bool {
@@ -109,15 +156,7 @@ func descriptorsEqual(a, b *v1.Descriptor) bool {
 
 type tagMap func(name.Reference, ...ociremote.Option) (name.Tag, error)
 
-func copyTagImage(tm tagMap, srcDigest name.Digest, dstRepo name.Repository, overwrite bool, opts ...remote.Option) error {
-	src, err := tm(srcDigest, ociremote.WithRemoteOptions(opts...))
-	if err != nil {
-		return err
-	}
-	return copyImage(src, dstRepo.Tag(src.Identifier()), overwrite, opts...)
-}
-
-func copyImage(src, dest name.Reference, overwrite bool, opts ...remote.Option) error {
+func remoteCopy(ctx context.Context, pusher *remote.Pusher, src, dest name.Reference, overwrite bool, opts ...remote.Option) error {
 	got, err := remote.Get(src, opts...)
 	if err != nil {
 		var te *transport.Error
@@ -141,17 +180,33 @@ func copyImage(src, dest name.Reference, overwrite bool, opts ...remote.Option) 
 	}
 
 	fmt.Fprintf(os.Stderr, "Copying %s to %s...\n", src, dest)
-	if got.MediaType.IsIndex() {
-		imgIdx, err := got.ImageIndex()
-		if err != nil {
-			return err
-		}
-		return remote.WriteIndex(dest, imgIdx, opts...)
+	return pusher.Push(ctx, dest, got)
+}
+
+func parseOnlyOpt(onlyFlag string, sigOnly bool) ([]tagMap, error) {
+	var tags []tagMap
+	tagSet := sets.New(strings.Split(onlyFlag, ",")...)
+
+	if sigOnly {
+		fmt.Fprintf(os.Stderr, "--sig-only is deprecated, use --only=sig instead")
+		tagSet.Insert("sig")
 	}
 
-	img, err := got.Image()
-	if err != nil {
-		return err
+	validTags := sets.New("sig", "sbom", "att")
+	for tag := range tagSet {
+		if !validTags.Has(tag) {
+			return nil, fmt.Errorf("invalid value for --only: %s, only following values are supported, %s", tag, validTags)
+		}
 	}
-	return remote.Write(dest, img, opts...)
+
+	if tagSet.Has("sig") {
+		tags = append(tags, ociremote.SignatureTag)
+	}
+	if tagSet.Has("sbom") {
+		tags = append(tags, ociremote.SBOMTag)
+	}
+	if tagSet.Has("att") {
+		tags = append(tags, ociremote.AttestationTag)
+	}
+	return tags, nil
 }

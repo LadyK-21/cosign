@@ -22,7 +22,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/sigstore/cosign/pkg/cosign/env"
+	"github.com/sigstore/cosign/v2/pkg/cosign/env"
 	"github.com/sigstore/sigstore/pkg/cryptoutils"
 	"github.com/sigstore/sigstore/pkg/fulcioroots"
 )
@@ -54,6 +54,13 @@ func GetIntermediates() (*x509.CertPool, error) {
 		roots, intermediates, singletonRootErr = initRoots()
 	})
 	return intermediates, singletonRootErr
+}
+
+// ReInit reinitializes the global roots and intermediates, overriding the sync.Once lock.
+// This is only to be used for tests, where the trust root environment variables may change after the roots are initialized in the module.
+func ReInit() error {
+	roots, intermediates, singletonRootErr = initRoots()
+	return singletonRootErr
 }
 
 func initRoots() (*x509.CertPool, *x509.CertPool, error) {

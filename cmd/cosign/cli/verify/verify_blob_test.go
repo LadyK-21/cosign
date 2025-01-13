@@ -38,17 +38,19 @@ import (
 	"github.com/cyberphone/json-canonicalization/go/src/webpki.org/jsoncanonicalizer"
 	"github.com/go-openapi/runtime"
 	"github.com/go-openapi/swag"
-	ssldsse "github.com/secure-systems-lab/go-securesystemslib/dsse"
-	"github.com/sigstore/cosign/cmd/cosign/cli/options"
-	"github.com/sigstore/cosign/internal/pkg/cosign/tsa/mock"
-	"github.com/sigstore/cosign/pkg/cosign"
-	"github.com/sigstore/cosign/pkg/cosign/bundle"
-	sigs "github.com/sigstore/cosign/pkg/signature"
-	ctypes "github.com/sigstore/cosign/pkg/types"
-	"github.com/sigstore/cosign/test"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/options"
+	"github.com/sigstore/cosign/v2/internal/pkg/cosign/tsa/mock"
+	"github.com/sigstore/cosign/v2/pkg/cosign"
+	"github.com/sigstore/cosign/v2/pkg/cosign/bundle"
+	sigs "github.com/sigstore/cosign/v2/pkg/signature"
+	ctypes "github.com/sigstore/cosign/v2/pkg/types"
+	"github.com/sigstore/cosign/v2/test"
+	protobundle "github.com/sigstore/protobuf-specs/gen/pb-go/bundle/v1"
+	protocommon "github.com/sigstore/protobuf-specs/gen/pb-go/common/v1"
 	"github.com/sigstore/rekor/pkg/generated/models"
 	"github.com/sigstore/rekor/pkg/pki"
 	"github.com/sigstore/rekor/pkg/types"
+	rekor_dsse "github.com/sigstore/rekor/pkg/types/dsse"
 	"github.com/sigstore/rekor/pkg/types/hashedrekord"
 	hashedrekord_v001 "github.com/sigstore/rekor/pkg/types/hashedrekord/v0.0.1"
 	"github.com/sigstore/rekor/pkg/types/intoto"
@@ -57,7 +59,7 @@ import (
 	"github.com/sigstore/sigstore/pkg/signature"
 	"github.com/sigstore/sigstore/pkg/signature/dsse"
 	signatureoptions "github.com/sigstore/sigstore/pkg/signature/options"
-	"github.com/sigstore/timestamp-authority/pkg/generated/client/timestamp"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 func TestSignaturesRef(t *testing.T) {
@@ -121,52 +123,6 @@ func TestSignaturesBundle(t *testing.T) {
 	}
 	if gotSig != b64sig {
 		t.Fatalf("unexpected signature, expected: %s got: %s", b64sig, gotSig)
-	}
-}
-
-func TestIsIntotoDSSEWithEnvelopes(t *testing.T) {
-	tts := []struct {
-		envelope     ssldsse.Envelope
-		isIntotoDSSE bool
-	}{
-		{
-			envelope: ssldsse.Envelope{
-				PayloadType: "application/vnd.in-toto+json",
-				Payload:     base64.StdEncoding.EncodeToString([]byte("This is a test")),
-				Signatures:  []ssldsse.Signature{},
-			},
-			isIntotoDSSE: true,
-		},
-	}
-	for _, tt := range tts {
-		envlopeBytes, _ := json.Marshal(tt.envelope)
-		got := isIntotoDSSE(envlopeBytes)
-		if got != tt.isIntotoDSSE {
-			t.Fatalf("unexpected envelope content")
-		}
-	}
-}
-
-func TestIsIntotoDSSEWithBytes(t *testing.T) {
-	tts := []struct {
-		envelope     []byte
-		isIntotoDSSE bool
-	}{
-		{
-			envelope:     []byte("This is no valid"),
-			isIntotoDSSE: false,
-		},
-		{
-			envelope:     []byte("MEUCIQDBmE1ZRFjUVic1hzukesJlmMFG1JqWWhcthnhawTeBNQIga3J9/WKsNlSZaySnl8V360bc2S8dIln2/qo186EfjHA="),
-			isIntotoDSSE: false,
-		},
-	}
-	for _, tt := range tts {
-		envlopeBytes, _ := json.Marshal(tt.envelope)
-		got := isIntotoDSSE(envlopeBytes)
-		if got != tt.isIntotoDSSE {
-			t.Fatalf("unexpected envelope content")
-		}
 	}
 }
 
@@ -242,38 +198,36 @@ func TestVerifyBlob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tsChain, err := tsaClient.Timestamp.GetTimestampCertChain(nil)
+	certChainPEM, err := cryptoutils.MarshalCertificatesToPEM(tsaClient.CertChain)
 	if err != nil {
-		t.Fatalf("unexpected error getting timestamp chain: %v", err)
+		t.Fatalf("unexpected error marshalling cert chain: %v", err)
 	}
 	expiredTSACertChainPath := filepath.Join(td, "exptsacertchain.pem")
-	if err := os.WriteFile(expiredTSACertChainPath, []byte(tsChain.Payload), 0644); err != nil {
+	if err := os.WriteFile(expiredTSACertChainPath, certChainPEM, 0644); err != nil {
 		t.Fatal(err)
 	}
-	var tsRespBytes bytes.Buffer
-	_, err = tsaClient.Timestamp.GetTimestampResponse(&timestamp.GetTimestampResponseParams{}, &tsRespBytes)
+	tsr, err := tsaClient.GetTimestampResponse(nil)
 	if err != nil {
 		t.Fatalf("unable to generate a timestamp response: %v", err)
 	}
-	rfc3161Timestamp := &bundle.RFC3161Timestamp{SignedRFC3161Timestamp: tsRespBytes.Bytes()}
+	rfc3161Timestamp := &bundle.RFC3161Timestamp{SignedRFC3161Timestamp: tsr}
 	expiredTSPath := writeTimestampFile(t, td, rfc3161Timestamp, "expiredrfc3161TS.json")
 	tsaClient, err = mock.NewTSAClient(unexpiredTSAOpts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	tsRespBytes.Reset()
-	_, err = tsaClient.Timestamp.GetTimestampResponse(&timestamp.GetTimestampResponseParams{}, &tsRespBytes)
+	tsr, err = tsaClient.GetTimestampResponse(nil)
 	if err != nil {
 		t.Fatalf("unable to generate a timestamp response: %v", err)
 	}
-	rfc3161Timestamp = &bundle.RFC3161Timestamp{SignedRFC3161Timestamp: tsRespBytes.Bytes()}
+	rfc3161Timestamp = &bundle.RFC3161Timestamp{SignedRFC3161Timestamp: tsr}
 	unexpiredTSPath := writeTimestampFile(t, td, rfc3161Timestamp, "unexpiredrfc3161TS.json")
-	tsChain, err = tsaClient.Timestamp.GetTimestampCertChain(nil)
+	certChainPEM, err = cryptoutils.MarshalCertificatesToPEM(tsaClient.CertChain)
 	if err != nil {
-		t.Fatalf("unexpected error getting timestamp chain: %v", err)
+		t.Fatalf("unexpected error marshalling cert chain: %v", err)
 	}
 	unexpiredTSACertChainPath := filepath.Join(td, "unexptsacertchain.pem")
-	if err := os.WriteFile(unexpiredTSACertChainPath, []byte(tsChain.Payload), 0644); err != nil {
+	if err := os.WriteFile(unexpiredTSACertChainPath, certChainPEM, 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -284,6 +238,7 @@ func TestVerifyBlob(t *testing.T) {
 		key        []byte
 		cert       *x509.Certificate
 		bundlePath string
+		newBundle  bool
 		// The rekor entry response when Rekor is enabled
 		rekorEntry     []*models.LogEntry
 		skipTlogVerify bool
@@ -368,6 +323,26 @@ func TestVerifyBlob(t *testing.T) {
 			bundlePath: makeLocalBundle(t, *rekorSigner, otherBytes, []byte(otherSignature),
 				pubKeyBytes, true),
 			shouldErr: true,
+		},
+		{
+			name:           "valid signature with public key - new bundle",
+			blob:           blobBytes,
+			signature:      blobSignature,
+			key:            pubKeyBytes,
+			bundlePath:     makeLocalNewBundle(t, []byte(blobSignature), sha256.Sum256(blobBytes)),
+			newBundle:      true,
+			skipTlogVerify: true,
+			shouldErr:      false,
+		},
+		{
+			name:           "invalid signature with public key - new bundle",
+			blob:           blobBytes,
+			signature:      otherSignature,
+			key:            pubKeyBytes,
+			bundlePath:     makeLocalNewBundle(t, []byte(blobSignature), sha256.Sum256(blobBytes)),
+			newBundle:      true,
+			skipTlogVerify: true,
+			shouldErr:      false,
 		},
 		{
 			name:      "invalid signature with public key",
@@ -602,7 +577,7 @@ func TestVerifyBlob(t *testing.T) {
 				entries = append(entries, *entry)
 			}
 			testServer := httptest.NewServer(http.HandlerFunc(
-				func(w http.ResponseWriter, r *http.Request) {
+				func(w http.ResponseWriter, _ *http.Request) {
 					w.Header().Set("Content-Type", "application/json")
 					json.NewEncoder(w).Encode(entries)
 				}))
@@ -612,15 +587,18 @@ func TestVerifyBlob(t *testing.T) {
 			cmd := VerifyBlobCmd{
 				KeyOpts: options.KeyOpts{
 					BundlePath:           tt.bundlePath,
+					NewBundleFormat:      tt.newBundle,
 					RekorURL:             testServer.URL,
 					RFC3161TimestampPath: tt.tsPath,
 					TSACertChainPath:     tt.tsChainPath,
 				},
-				CertEmail:      identity,
-				CertOIDCIssuer: issuer,
-				IgnoreSCT:      true,
-				CertChain:      chainPath,
-				SkipTlogVerify: tt.skipTlogVerify,
+				CertVerifyOptions: options.CertVerifyOptions{
+					CertIdentity:   identity,
+					CertOidcIssuer: issuer,
+				},
+				IgnoreSCT:  true,
+				CertChain:  chainPath,
+				IgnoreTlog: tt.skipTlogVerify,
 			}
 			blobPath := writeBlobFile(t, td, string(blobBytes), "blob.txt")
 			if tt.signature != "" {
@@ -639,12 +617,48 @@ func TestVerifyBlob(t *testing.T) {
 				keyPath := writeBlobFile(t, td, string(tt.key), "key.pem")
 				cmd.KeyRef = keyPath
 			}
+			if tt.newBundle {
+				cmd.TrustedRootPath = writeTrustedRootFile(t, td, "{\"mediaType\":\"application/vnd.dev.sigstore.trustedroot+json;version=0.1\"}")
+				cmd.KeyOpts.RekorURL = ""
+				cmd.KeyOpts.RFC3161TimestampPath = ""
+				cmd.KeyOpts.TSACertChainPath = ""
+				cmd.CertChain = ""
+			}
 
 			err := cmd.Exec(context.Background(), blobPath)
 			if (err != nil) != tt.shouldErr {
 				t.Fatalf("verifyBlob()= %s, expected shouldErr=%t ", err, tt.shouldErr)
 			}
 		})
+	}
+}
+
+func TestVerifyBlobCertMissingSubject(t *testing.T) {
+	ctx := context.Background()
+
+	verifyBlob := VerifyBlobCmd{
+		CertRef: "cert.pem",
+		CertVerifyOptions: options.CertVerifyOptions{
+			CertOidcIssuer: "issuer",
+		},
+	}
+	err := verifyBlob.Exec(ctx, "blob")
+	if err == nil {
+		t.Fatalf("verifyBlob() expected '--certificate-identity required'")
+	}
+}
+
+func TestVerifyBlobCertMissingIssuer(t *testing.T) {
+	ctx := context.Background()
+	verifyBlob := VerifyBlobCmd{
+		CertRef: "cert.pem",
+		CertVerifyOptions: options.CertVerifyOptions{
+			CertIdentity: "subject",
+		},
+	}
+	err := verifyBlob.Exec(ctx, "blob")
+	if err == nil {
+		t.Fatalf("verifyBlob() expected '--certificate-oidc-issuer required'")
 	}
 }
 
@@ -775,8 +789,39 @@ func makeLocalBundleWithoutRekorBundle(t *testing.T, sig []byte, svBytes []byte)
 	return bundlePath
 }
 
+func makeLocalNewBundle(t *testing.T, sig []byte, digest [32]byte) string {
+	b, err := bundle.MakeProtobufBundle("hint", []byte{}, nil, []byte{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b.Content = &protobundle.Bundle_MessageSignature{
+		MessageSignature: &protocommon.MessageSignature{
+			MessageDigest: &protocommon.HashOutput{
+				Algorithm: protocommon.HashAlgorithm_SHA2_256,
+				Digest:    digest[:],
+			},
+			Signature: sig,
+		},
+	}
+
+	contents, err := protojson.Marshal(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// write bundle to disk
+	td := t.TempDir()
+	bundlePath := filepath.Join(td, "bundle.sigstore.json")
+	if err := os.WriteFile(bundlePath, contents, 0644); err != nil {
+		t.Fatal(err)
+	}
+	return bundlePath
+}
+
 func TestVerifyBlobCmdWithBundle(t *testing.T) {
 	keyless := newKeylessStack(t)
+	defer os.RemoveAll(keyless.td)
 
 	t.Run("Normal verification", func(t *testing.T) {
 		identity := "hello@foo.com"
@@ -801,10 +846,12 @@ func TestVerifyBlobCmdWithBundle(t *testing.T) {
 
 		// Verify command
 		cmd := VerifyBlobCmd{
-			KeyOpts:        options.KeyOpts{BundlePath: bundlePath},
-			CertEmail:      identity,
-			CertOIDCIssuer: issuer,
-			IgnoreSCT:      true,
+			KeyOpts: options.KeyOpts{BundlePath: bundlePath},
+			CertVerifyOptions: options.CertVerifyOptions{
+				CertIdentity:   identity,
+				CertOidcIssuer: issuer,
+			},
+			IgnoreSCT: true,
 		}
 		if err := cmd.Exec(context.Background(), blobPath); err != nil {
 			t.Fatal(err)
@@ -877,7 +924,44 @@ func TestVerifyBlobCmdWithBundle(t *testing.T) {
 			t.Fatal("expected error due to expired cert, received nil")
 		}
 	})
-	t.Run("Attestation", func(t *testing.T) {
+	t.Run("dsse Attestation", func(t *testing.T) {
+		identity := "hello@foo.com"
+		issuer := "issuer"
+		leafCert, _, leafPemCert, signer := keyless.genLeafCert(t, identity, issuer)
+
+		stmt := `{"_type":"https://in-toto.io/Statement/v0.1","predicateType":"customFoo","subject":[{"name":"subject","digest":{"sha256":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}}],"predicate":{}}`
+		wrapped := dsse.WrapSigner(signer, ctypes.IntotoPayloadType)
+		signedPayload, err := wrapped.SignMessage(bytes.NewReader([]byte(stmt)), signatureoptions.WithContext(context.Background()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// intoto sig = json-serialized dsse envelope
+		sig := signedPayload
+
+		// Create bundle
+		entry := genRekorEntry(t, rekor_dsse.KIND, "0.0.1", signedPayload, leafPemCert, sig)
+		b := createBundle(t, sig, leafPemCert, keyless.rekorLogID, leafCert.NotBefore.Unix()+1, entry)
+		b.Bundle.SignedEntryTimestamp = keyless.rekorSignPayload(t, b.Bundle.Payload)
+		bundlePath := writeBundleFile(t, keyless.td, b, "bundle.json")
+		blobPath := writeBlobFile(t, keyless.td, string(signedPayload), "attestation.txt")
+
+		// Verify command
+		cmd := VerifyBlobAttestationCommand{
+			CertVerifyOptions: options.CertVerifyOptions{
+				CertIdentity:   identity,
+				CertOidcIssuer: issuer,
+			},
+			CertRef:       "", // Cert is fetched from bundle
+			CertChain:     "", // Chain is fetched from TUF/SIGSTORE_ROOT_FILE
+			SignaturePath: "", // Sig is fetched from bundle
+			KeyOpts:       options.KeyOpts{BundlePath: bundlePath},
+			IgnoreSCT:     true,
+		}
+		if err := cmd.Exec(context.Background(), blobPath); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("intoto Attestation", func(t *testing.T) {
 		identity := "hello@foo.com"
 		issuer := "issuer"
 		leafCert, _, leafPemCert, signer := keyless.genLeafCert(t, identity, issuer)
@@ -899,12 +983,16 @@ func TestVerifyBlobCmdWithBundle(t *testing.T) {
 		blobPath := writeBlobFile(t, keyless.td, string(signedPayload), "attestation.txt")
 
 		// Verify command
-		cmd := VerifyBlobCmd{
-			CertRef:   "", // Cert is fetched from bundle
-			CertChain: "", // Chain is fetched from TUF/SIGSTORE_ROOT_FILE
-			SigRef:    "", // Sig is fetched from bundle
-			KeyOpts:   options.KeyOpts{BundlePath: bundlePath},
-			IgnoreSCT: true,
+		cmd := VerifyBlobAttestationCommand{
+			CertVerifyOptions: options.CertVerifyOptions{
+				CertIdentity:   identity,
+				CertOidcIssuer: issuer,
+			},
+			CertRef:       "", // Cert is fetched from bundle
+			CertChain:     "", // Chain is fetched from TUF/SIGSTORE_ROOT_FILE
+			SignaturePath: "", // Sig is fetched from bundle
+			KeyOpts:       options.KeyOpts{BundlePath: bundlePath},
+			IgnoreSCT:     true,
 		}
 		if err := cmd.Exec(context.Background(), blobPath); err != nil {
 			t.Fatal(err)
@@ -933,6 +1021,10 @@ func TestVerifyBlobCmdWithBundle(t *testing.T) {
 
 		// Verify command
 		cmd := VerifyBlobCmd{
+			CertVerifyOptions: options.CertVerifyOptions{
+				CertIdentity:   identity,
+				CertOidcIssuer: issuer,
+			},
 			CertRef:   "", // Cert is fetched from bundle
 			CertChain: "", // Chain is fetched from TUF/SIGSTORE_ROOT_FILE
 			SigRef:    "", // Sig is fetched from bundle
@@ -967,16 +1059,18 @@ func TestVerifyBlobCmdWithBundle(t *testing.T) {
 
 		// Verify command
 		cmd := VerifyBlobCmd{
-			KeyOpts:        options.KeyOpts{BundlePath: bundlePath},
-			CertRef:        "", // Cert is fetched from bundle
-			CertOIDCIssuer: issuer,
-			CertEmail:      "invalid@example.com",
-			CertChain:      "", // Chain is fetched from TUF/SIGSTORE_ROOT_FILE
-			SigRef:         "", // Sig is fetched from bundle
-			IgnoreSCT:      true,
+			KeyOpts: options.KeyOpts{BundlePath: bundlePath},
+			CertRef: "", // Cert is fetched from bundle
+			CertVerifyOptions: options.CertVerifyOptions{
+				CertOidcIssuer: issuer,
+				CertIdentity:   "invalid@example.com",
+			},
+			CertChain: "", // Chain is fetched from TUF/SIGSTORE_ROOT_FILE
+			SigRef:    "", // Sig is fetched from bundle
+			IgnoreSCT: true,
 		}
 		err = cmd.Exec(context.Background(), blobPath)
-		if err == nil || !strings.Contains(err.Error(), "expected identity not found in certificate") {
+		if err == nil || !strings.Contains(err.Error(), "none of the expected identities matched what was in the certificate") {
 			t.Fatalf("expected error with mismatched identity, got %v", err)
 		}
 	})
@@ -1003,16 +1097,18 @@ func TestVerifyBlobCmdWithBundle(t *testing.T) {
 
 		// Verify command
 		cmd := VerifyBlobCmd{
-			CertRef:        "", // Cert is fetched from bundle
-			CertOIDCIssuer: "invalid",
-			CertEmail:      identity,
-			CertChain:      "", // Chain is fetched from TUF/SIGSTORE_ROOT_FILE
-			SigRef:         "", // Sig is fetched from bundle
-			KeyOpts:        options.KeyOpts{BundlePath: bundlePath},
-			IgnoreSCT:      true,
+			CertRef: "", // Cert is fetched from bundle
+			CertVerifyOptions: options.CertVerifyOptions{
+				CertOidcIssuer: "invalid",
+				CertIdentity:   identity,
+			},
+			CertChain: "", // Chain is fetched from TUF/SIGSTORE_ROOT_FILE
+			SigRef:    "", // Sig is fetched from bundle
+			KeyOpts:   options.KeyOpts{BundlePath: bundlePath},
+			IgnoreSCT: true,
 		}
 		err = cmd.Exec(context.Background(), blobPath)
-		if err == nil || !strings.Contains(err.Error(), "expected oidc issuer not found in certificate") {
+		if err == nil || !strings.Contains(err.Error(), "none of the expected identities matched what was in the certificate") {
 			t.Fatalf("expected error with mismatched issuer, got %v", err)
 		}
 	})
@@ -1040,13 +1136,15 @@ func TestVerifyBlobCmdWithBundle(t *testing.T) {
 
 		// Verify command
 		cmd := VerifyBlobCmd{
-			CertRef:        certPath,
-			CertOIDCIssuer: issuer,
-			CertEmail:      identity,
-			CertChain:      "", // Chain is fetched from TUF/SIGSTORE_ROOT_FILE
-			SigRef:         "", // Sig is fetched from bundle
-			KeyOpts:        options.KeyOpts{BundlePath: bundlePath},
-			IgnoreSCT:      true,
+			CertRef: certPath,
+			CertVerifyOptions: options.CertVerifyOptions{
+				CertOidcIssuer: issuer,
+				CertIdentity:   identity,
+			},
+			CertChain: "", // Chain is fetched from TUF/SIGSTORE_ROOT_FILE
+			SigRef:    "", // Sig is fetched from bundle
+			KeyOpts:   options.KeyOpts{BundlePath: bundlePath},
+			IgnoreSCT: true,
 		}
 		err = cmd.Exec(context.Background(), blobPath)
 		if err != nil {
@@ -1072,20 +1170,19 @@ func TestVerifyBlobCmdWithBundle(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		tsChain, err := tsaClient.Timestamp.GetTimestampCertChain(nil)
+		certChainPEM, err := cryptoutils.MarshalCertificatesToPEM(tsaClient.CertChain)
 		if err != nil {
-			t.Fatalf("unexpected error getting timestamp chain: %v", err)
+			t.Fatalf("unexpected error marshalling cert chain: %v", err)
 		}
 		tsaCertChainPath := filepath.Join(keyless.td, "tsacertchain.pem")
-		if err := os.WriteFile(tsaCertChainPath, []byte(tsChain.Payload), 0644); err != nil {
+		if err := os.WriteFile(tsaCertChainPath, certChainPEM, 0644); err != nil {
 			t.Fatal(err)
 		}
-		var tsRespBytes bytes.Buffer
-		_, err = tsaClient.Timestamp.GetTimestampResponse(&timestamp.GetTimestampResponseParams{}, &tsRespBytes)
+		tsr, err := tsaClient.GetTimestampResponse(nil)
 		if err != nil {
 			t.Fatalf("unable to generate a timestamp response: %v", err)
 		}
-		rfc3161Timestamp := &bundle.RFC3161Timestamp{SignedRFC3161Timestamp: tsRespBytes.Bytes()}
+		rfc3161Timestamp := &bundle.RFC3161Timestamp{SignedRFC3161Timestamp: tsr}
 		tsPath := writeTimestampFile(t, keyless.td, rfc3161Timestamp, "rfc3161TS.json")
 
 		entry := genRekorEntry(t, hashedrekord.KIND, hashedrekord.New().DefaultVersion(), []byte(blob), leafPemCert, sig)
@@ -1096,12 +1193,14 @@ func TestVerifyBlobCmdWithBundle(t *testing.T) {
 
 		// Verify command
 		cmd := VerifyBlobCmd{
-			CertOIDCIssuer: issuer,
-			CertEmail:      identity,
-			CertChain:      os.Getenv("SIGSTORE_ROOT_FILE"),
-			SigRef:         "", // Sig is fetched from bundle
-			KeyOpts:        options.KeyOpts{BundlePath: bundlePath, TSACertChainPath: tsaCertChainPath, RFC3161TimestampPath: tsPath},
-			IgnoreSCT:      true,
+			CertVerifyOptions: options.CertVerifyOptions{
+				CertOidcIssuer: issuer,
+				CertIdentity:   identity,
+			},
+			CertChain: os.Getenv("SIGSTORE_ROOT_FILE"),
+			SigRef:    "", // Sig is fetched from bundle
+			KeyOpts:   options.KeyOpts{BundlePath: bundlePath, TSACertChainPath: tsaCertChainPath, RFC3161TimestampPath: tsPath},
+			IgnoreSCT: true,
 		}
 		err = cmd.Exec(context.Background(), blobPath)
 		if err != nil {
@@ -1131,12 +1230,14 @@ func TestVerifyBlobCmdWithBundle(t *testing.T) {
 
 		// Verify command
 		cmd := VerifyBlobCmd{
-			CertOIDCIssuer: issuer,
-			CertEmail:      identity,
-			CertChain:      os.Getenv("SIGSTORE_ROOT_FILE"),
-			SigRef:         "", // Sig is fetched from bundle
-			KeyOpts:        options.KeyOpts{BundlePath: bundlePath},
-			IgnoreSCT:      true,
+			CertVerifyOptions: options.CertVerifyOptions{
+				CertOidcIssuer: issuer,
+				CertIdentity:   identity,
+			},
+			CertChain: os.Getenv("SIGSTORE_ROOT_FILE"),
+			SigRef:    "", // Sig is fetched from bundle
+			KeyOpts:   options.KeyOpts{BundlePath: bundlePath},
+			IgnoreSCT: true,
 		}
 		err = cmd.Exec(context.Background(), blobPath)
 		if err != nil {
@@ -1177,24 +1278,67 @@ func TestVerifyBlobCmdWithBundle(t *testing.T) {
 
 		// Verify command
 		cmd := VerifyBlobCmd{
-			CertOIDCIssuer: issuer,
-			CertEmail:      identity,
-			CertChain:      tmpChainFile.Name(),
-			SigRef:         "", // Sig is fetched from bundle
-			KeyOpts:        options.KeyOpts{BundlePath: bundlePath},
-			IgnoreSCT:      true,
+			CertVerifyOptions: options.CertVerifyOptions{
+				CertOidcIssuer: issuer,
+				CertIdentity:   identity,
+			},
+			CertChain: tmpChainFile.Name(),
+			SigRef:    "", // Sig is fetched from bundle
+			KeyOpts:   options.KeyOpts{BundlePath: bundlePath},
+			IgnoreSCT: true,
 		}
 		err = cmd.Exec(context.Background(), blobPath)
 		if err == nil || !strings.Contains(err.Error(), "x509: certificate signed by unknown authority") {
 			t.Fatalf("expected error with mismatched root, got %v", err)
 		}
 	})
+	t.Run("intoto Attestation with keyless", func(t *testing.T) {
+		identity := "hello@foo.com"
+		issuer := "issuer"
+		leafCert, _, leafPemCert, signer := keyless.genLeafCert(t, identity, issuer)
+
+		stmt := `{"_type":"https://in-toto.io/Statement/v0.1","predicateType":"customFoo","subject":[{"name":"subject","digest":{"sha256":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}}],"predicate":{}}`
+		wrapped := dsse.WrapSigner(signer, ctypes.IntotoPayloadType)
+		signedPayload, err := wrapped.SignMessage(bytes.NewReader([]byte(stmt)), signatureoptions.WithContext(context.Background()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// intoto sig = json-serialized dsse envelope
+		sig := signedPayload
+
+		// Create bundle
+		entry := genRekorEntry(t, intoto.KIND, "0.0.1", signedPayload, leafPemCert, sig)
+		b := createBundle(t, sig, leafPemCert, keyless.rekorLogID, leafCert.NotBefore.Unix()+1, entry)
+		b.Bundle.SignedEntryTimestamp = keyless.rekorSignPayload(t, b.Bundle.Payload)
+		bundlePath := writeBundleFile(t, keyless.td, b, "bundle.json")
+		blobPath := writeBlobFile(t, keyless.td, string(signedPayload), "attestation.txt")
+
+		// Verify command with bundle
+		cmd := VerifyBlobAttestationCommand{
+			CertVerifyOptions: options.CertVerifyOptions{
+				CertOidcIssuer: issuer,
+				CertIdentity:   identity,
+			},
+			CertRef:       "", // Cert is fetched from bundle
+			CertChain:     "", // Chain is fetched from TUF/SIGSTORE_ROOT_FILE
+			SignaturePath: "", // Sig is fetched from bundle
+			KeyOpts:       options.KeyOpts{BundlePath: bundlePath},
+			IgnoreSCT:     true,
+			CheckClaims:   false, // Intentionally false. This checks the subject claim. This is tested in verify_blob_attestation_test.go
+		}
+		if err := cmd.Exec(context.Background(), blobPath); err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 func TestVerifyBlobCmdInvalidRootCA(t *testing.T) {
 	keyless := newKeylessStack(t)
+	defer os.RemoveAll(keyless.td)
+
 	// Change the keyless stack.
 	newKeyless := newKeylessStack(t)
+	defer os.RemoveAll(newKeyless.td)
 	t.Run("Invalid certificate root when specifying cert via certRef", func(t *testing.T) {
 		identity := "hello@foo.com"
 		issuer := "issuer"
@@ -1219,13 +1363,15 @@ func TestVerifyBlobCmdInvalidRootCA(t *testing.T) {
 
 		// Verify command
 		cmd := VerifyBlobCmd{
-			CertRef:        certPath,
-			CertOIDCIssuer: issuer,
-			CertEmail:      identity,
-			CertChain:      "", // Chain is fetched from TUF/SIGSTORE_ROOT_FILE
-			SigRef:         "", // Sig is fetched from bundle
-			KeyOpts:        options.KeyOpts{BundlePath: bundlePath},
-			IgnoreSCT:      true,
+			CertRef: certPath,
+			CertVerifyOptions: options.CertVerifyOptions{
+				CertOidcIssuer: issuer,
+				CertIdentity:   identity,
+			},
+			CertChain: "", // Chain is fetched from TUF/SIGSTORE_ROOT_FILE
+			SigRef:    "", // Sig is fetched from bundle
+			KeyOpts:   options.KeyOpts{BundlePath: bundlePath},
+			IgnoreSCT: true,
 		}
 		err = cmd.Exec(context.Background(), blobPath)
 		if err == nil || !strings.Contains(err.Error(), "certificate signed by unknown authority") {
@@ -1255,13 +1401,15 @@ func TestVerifyBlobCmdInvalidRootCA(t *testing.T) {
 
 		// Verify command
 		cmd := VerifyBlobCmd{
-			CertRef:        "",
-			CertOIDCIssuer: issuer, // Fetched from bundle
-			CertEmail:      identity,
-			CertChain:      "", // Chain is fetched from TUF/SIGSTORE_ROOT_FILE
-			SigRef:         "", // Sig is fetched from bundle
-			KeyOpts:        options.KeyOpts{BundlePath: bundlePath},
-			IgnoreSCT:      true,
+			CertRef: "",
+			CertVerifyOptions: options.CertVerifyOptions{
+				CertOidcIssuer: issuer, // Fetched from bundle
+				CertIdentity:   identity,
+			},
+			CertChain: "", // Chain is fetched from TUF/SIGSTORE_ROOT_FILE
+			SigRef:    "", // Sig is fetched from bundle
+			KeyOpts:   options.KeyOpts{BundlePath: bundlePath},
+			IgnoreSCT: true,
 		}
 		err = cmd.Exec(context.Background(), blobPath)
 		if err == nil || !strings.Contains(err.Error(), "certificate signed by unknown authority") {
@@ -1429,6 +1577,8 @@ func createEntry(ctx context.Context, kind, apiVersion string, blobBytes, certBy
 		props.SignatureBytes = sigBytes
 	case intoto.KIND:
 		props.ArtifactBytes = blobBytes
+	case rekor_dsse.KIND:
+		props.ArtifactBytes = blobBytes
 	default:
 		return nil, fmt.Errorf("unexpected entry kind: %s", kind)
 	}
@@ -1482,6 +1632,14 @@ func writeTimestampFile(t *testing.T, td string, ts *bundle.RFC3161Timestamp, na
 	}
 	path := filepath.Join(td, name)
 	if err := os.WriteFile(path, jsonBundle, 0644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func writeTrustedRootFile(t *testing.T, td, contents string) string {
+	path := filepath.Join(td, "trusted_root.json")
+	if err := os.WriteFile(path, []byte(contents), 0644); err != nil {
 		t.Fatal(err)
 	}
 	return path

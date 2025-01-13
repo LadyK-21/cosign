@@ -16,35 +16,105 @@ package cosign
 
 import "fmt"
 
-var (
-	// ErrNoMatchingSignatures is the error returned when there are no matching
-	// signatures during verification.
-	ErrNoMatchingSignatures = &VerificationError{"no matching signatures"}
-
-	// ErrNoMatchingAttestations is the error returned when there are no
-	// matching attestations during verification.
-	ErrNoMatchingAttestations = &VerificationError{"no matching attestations"}
-)
-
-// VerificationError is the type of Go error that is used by cosign to surface
+// VerificationFailure is the type of Go error that is used by cosign to surface
 // errors actually related to verification (vs. transient, misconfiguration,
 // transport, or authentication related issues).
-type VerificationError struct {
-	message string
+type VerificationFailure struct {
+	err error
 }
 
-// NewVerificationError constructs a new VerificationError in a manner similar
-// to fmt.Errorf
+func (e *VerificationFailure) Error() string {
+	return e.err.Error()
+}
+
+func (e *VerificationFailure) Unwrap() error {
+	return e.err
+}
+
+type ErrNoMatchingSignatures struct {
+	err error
+}
+
+func (e *ErrNoMatchingSignatures) Error() string {
+	return e.err.Error()
+}
+
+func (e *ErrNoMatchingSignatures) Unwrap() error {
+	return e.err
+}
+
+type ErrImageTagNotFound struct {
+	err error
+}
+
+func (e *ErrImageTagNotFound) Error() string {
+	return e.err.Error()
+}
+
+func (e *ErrImageTagNotFound) Unwrap() error {
+	return e.err
+}
+
+type ErrNoSignaturesFound struct {
+	err error
+}
+
+func (e *ErrNoSignaturesFound) Error() string {
+	return e.err.Error()
+}
+
+func (e *ErrNoSignaturesFound) Unwrap() error {
+	return e.err
+}
+
+type ErrNoMatchingAttestations struct {
+	err error
+}
+
+func (e *ErrNoMatchingAttestations) Error() string {
+	return e.err.Error()
+}
+
+func (e *ErrNoMatchingAttestations) Unwrap() error {
+	return e.err
+}
+
+type ErrNoCertificateFoundOnSignature struct {
+	err error
+}
+
+func (e *ErrNoCertificateFoundOnSignature) Error() string {
+	return e.err.Error()
+}
+
+func (e *ErrNoCertificateFoundOnSignature) Unwrap() error {
+	return e.err
+}
+
+// NewVerificationError exists for backwards compatibility.
+// Deprecated: see [VerificationFailure].
 func NewVerificationError(msg string, args ...interface{}) error {
 	return &VerificationError{
 		message: fmt.Sprintf(msg, args...),
 	}
 }
 
-// Assert that we implement error at build time.
-var _ error = (*VerificationError)(nil)
-
-// Error implements error
-func (ve *VerificationError) Error() string {
-	return ve.message
+// VerificationError exists for backwards compatibility.
+// Deprecated: see [VerificationFailure].
+type VerificationError struct {
+	message string
 }
+
+func (e *VerificationError) Error() string {
+	return e.message
+}
+
+var (
+	// ErrNoMatchingAttestationsMessage exists for backwards compatibility.
+	// Deprecated: see [ErrNoMatchingAttestations].
+	ErrNoMatchingAttestationsMessage = "no matching attestations"
+
+	// ErrNoMatchingAttestationsType exists for backwards compatibility.
+	// Deprecated: see [ErrNoMatchingAttestations].
+	ErrNoMatchingAttestationsType = "NoMatchingAttestations"
+)

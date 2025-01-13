@@ -25,7 +25,8 @@ import (
 	"sigs.k8s.io/release-utils/version"
 
 	cranecmd "github.com/google/go-containerregistry/cmd/crane/cmd"
-	"github.com/sigstore/cosign/cmd/cosign/cli/options"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/options"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/templates"
 	cobracompletefig "github.com/withfig/autocomplete-tools/integrations/cobra"
 )
 
@@ -61,7 +62,7 @@ func New() *cobra.Command {
 		Short:             "A tool for Container Signing, Verification and Storage in an OCI registry.",
 		DisableAutoGenTag: true,
 		SilenceUsage:      true, // Don't show usage on errors
-		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			if ro.OutputFile != "" {
 				var err error
 				out, err = os.Create(ro.OutputFile)
@@ -79,7 +80,7 @@ func New() *cobra.Command {
 
 			return nil
 		},
-		PersistentPostRun: func(cmd *cobra.Command, args []string) {
+		PersistentPostRun: func(_ *cobra.Command, _ []string) {
 			if out != nil {
 				_ = out.Close()
 			}
@@ -88,11 +89,15 @@ func New() *cobra.Command {
 	}
 	ro.AddFlags(cmd)
 
+	templates.SetCustomUsageFunc(cmd)
+
 	// Add sub-commands.
 	cmd.AddCommand(Attach())
 	cmd.AddCommand(Attest())
 	cmd.AddCommand(AttestBlob())
+	cmd.AddCommand(Bundle())
 	cmd.AddCommand(Clean())
+	cmd.AddCommand(Debug())
 	cmd.AddCommand(Tree())
 	cmd.AddCommand(Completion())
 	cmd.AddCommand(Copy())
@@ -106,7 +111,6 @@ func New() *cobra.Command {
 	cmd.AddCommand(Manifest())
 	cmd.AddCommand(PIVTool())
 	cmd.AddCommand(PKCS11Tool())
-	cmd.AddCommand(Policy())
 	cmd.AddCommand(PublicKey())
 	cmd.AddCommand(Save())
 	cmd.AddCommand(Sign())
@@ -117,6 +121,7 @@ func New() *cobra.Command {
 	cmd.AddCommand(VerifyBlob())
 	cmd.AddCommand(VerifyBlobAttestation())
 	cmd.AddCommand(Triangulate())
+	cmd.AddCommand(TrustedRoot())
 	cmd.AddCommand(Env())
 	cmd.AddCommand(version.WithFont("starwars"))
 

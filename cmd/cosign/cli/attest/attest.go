@@ -21,30 +21,30 @@ import (
 	_ "crypto/sha256" // for `crypto.SHA256`
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"time"
 
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 
-	"github.com/sigstore/cosign/cmd/cosign/cli/options"
-	"github.com/sigstore/cosign/cmd/cosign/cli/rekor"
-	"github.com/sigstore/cosign/cmd/cosign/cli/sign"
-	"github.com/sigstore/cosign/internal/pkg/cosign/tsa"
-	"github.com/sigstore/cosign/pkg/cosign"
-	"github.com/sigstore/cosign/pkg/cosign/attestation"
-	cbundle "github.com/sigstore/cosign/pkg/cosign/bundle"
-	cremote "github.com/sigstore/cosign/pkg/cosign/remote"
-	"github.com/sigstore/cosign/pkg/oci/mutate"
-	ociremote "github.com/sigstore/cosign/pkg/oci/remote"
-	"github.com/sigstore/cosign/pkg/oci/static"
-	"github.com/sigstore/cosign/pkg/types"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/options"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/rekor"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/sign"
+	"github.com/sigstore/cosign/v2/internal/pkg/cosign/tsa"
+	tsaclient "github.com/sigstore/cosign/v2/internal/pkg/cosign/tsa/client"
+	"github.com/sigstore/cosign/v2/internal/ui"
+	"github.com/sigstore/cosign/v2/pkg/cosign"
+	"github.com/sigstore/cosign/v2/pkg/cosign/attestation"
+	cbundle "github.com/sigstore/cosign/v2/pkg/cosign/bundle"
+	cremote "github.com/sigstore/cosign/v2/pkg/cosign/remote"
+	"github.com/sigstore/cosign/v2/pkg/oci/mutate"
+	ociremote "github.com/sigstore/cosign/v2/pkg/oci/remote"
+	"github.com/sigstore/cosign/v2/pkg/oci/static"
+	"github.com/sigstore/cosign/v2/pkg/types"
 	"github.com/sigstore/rekor/pkg/generated/client"
 	"github.com/sigstore/rekor/pkg/generated/models"
 	"github.com/sigstore/sigstore/pkg/signature/dsse"
 	signatureoptions "github.com/sigstore/sigstore/pkg/signature/options"
-	tsaclient "github.com/sigstore/timestamp-authority/pkg/client"
 )
 
 type tlogUploadFn func(*client.Rekor, []byte) (*models.LogEntryAnon, error)
@@ -71,15 +71,17 @@ func uploadToTlog(ctx context.Context, sv *sign.SignerVerifier, rekorURL string,
 type AttestCommand struct {
 	options.KeyOpts
 	options.RegistryOptions
-	CertPath      string
-	CertChainPath string
-	NoUpload      bool
-	PredicatePath string
-	PredicateType string
-	Replace       bool
-	Timeout       time.Duration
-	TlogUpload    bool
-	TSAServerURL  string
+	CertPath                string
+	CertChainPath           string
+	NoUpload                bool
+	PredicatePath           string
+	PredicateType           string
+	Replace                 bool
+	Timeout                 time.Duration
+	TlogUpload              bool
+	TSAServerURL            string
+	RekorEntryType          string
+	RecordCreationTimestamp bool
 }
 
 // nolint
@@ -89,6 +91,14 @@ func (c *AttestCommand) Exec(ctx context.Context, imageRef string) error {
 		return &options.KeyParseError{}
 	}
 
+	if c.PredicatePath == "" {
+		return fmt.Errorf("predicate cannot be empty")
+	}
+
+	if c.RekorEntryType != "dsse" && c.RekorEntryType != "intoto" {
+		return fmt.Errorf("unknown value for rekor-entry-type")
+	}
+
 	predicateURI, err := options.ParsePredicateType(c.PredicateType)
 	if err != nil {
 		return err
@@ -96,6 +106,10 @@ func (c *AttestCommand) Exec(ctx context.Context, imageRef string) error {
 	ref, err := name.ParseReference(imageRef, c.NameOptions()...)
 	if err != nil {
 		return fmt.Errorf("parsing reference: %w", err)
+	}
+	if _, ok := ref.(name.Digest); !ok {
+		msg := fmt.Sprintf(ui.TagReferenceMessage, imageRef)
+		ui.Warnf(ctx, msg)
 	}
 
 	if c.Timeout != 0 {
@@ -126,18 +140,11 @@ func (c *AttestCommand) Exec(ctx context.Context, imageRef string) error {
 	wrapped := dsse.WrapSigner(sv, types.IntotoPayloadType)
 	dd := cremote.NewDupeDetector(sv)
 
-	var predicate io.ReadCloser
-	if c.PredicatePath == "-" {
-		fmt.Fprintln(os.Stderr, "Using payload from: standard input")
-		predicate = os.Stdin
-	} else {
-		fmt.Fprintln(os.Stderr, "Using payload from:", c.PredicatePath)
-		predicate, err = os.Open(c.PredicatePath)
-		if err != nil {
-			return err
-		}
-		defer predicate.Close()
+	predicate, err := predicateReader(c.PredicatePath)
+	if err != nil {
+		return fmt.Errorf("getting predicate reader: %w", err)
 	}
+	defer predicate.Close()
 
 	sh, err := attestation.GenerateStatement(attestation.GenerateOpts{
 		Predicate: predicate,
@@ -168,13 +175,15 @@ func (c *AttestCommand) Exec(ctx context.Context, imageRef string) error {
 		opts = append(opts, static.WithCertChain(sv.Cert, sv.Chain))
 	}
 	if c.KeyOpts.TSAServerURL != "" {
-		clientTSA, err := tsaclient.GetTimestampClient(c.KeyOpts.TSAServerURL)
-		if err != nil {
-			return fmt.Errorf("failed to create TSA client: %w", err)
-		}
-
-		// Here we get the response from the timestamped authority server
-		responseBytes, err := tsa.GetTimestampedSignature(signedPayload, clientTSA)
+		// TODO - change this when we implement protobuf / new bundle support
+		//
+		// Historically, cosign sent the entire JSON DSSE Envelope to the
+		// timestamp authority. However, when sigstore clients are verifying a
+		// bundle they will use the DSSE Sig field, so we choose what signature
+		// to send to the timestamp authority based on our output format.
+		//
+		// See cmd/cosign/cli/attest/attest_blob.go
+		responseBytes, err := tsa.GetTimestampedSignature(signedPayload, tsaclient.NewTSAClient(c.KeyOpts.TSAServerURL))
 		if err != nil {
 			return err
 		}
@@ -182,10 +191,31 @@ func (c *AttestCommand) Exec(ctx context.Context, imageRef string) error {
 
 		opts = append(opts, static.WithRFC3161Timestamp(bundle))
 	}
+
+	predicateType, err := options.ParsePredicateType(c.PredicateType)
+	if err != nil {
+		return err
+	}
+
+	predicateTypeAnnotation := map[string]string{
+		"predicateType": predicateType,
+	}
+	// Add predicateType as manifest annotation
+	opts = append(opts, static.WithAnnotations(predicateTypeAnnotation))
+
 	// Check whether we should be uploading to the transparency log
-	if sign.ShouldUploadToTlog(ctx, c.KeyOpts, digest, c.TlogUpload) {
+	shouldUpload, err := sign.ShouldUploadToTlog(ctx, c.KeyOpts, digest, c.TlogUpload)
+	if err != nil {
+		return fmt.Errorf("should upload to tlog: %w", err)
+	}
+	if shouldUpload {
 		bundle, err := uploadToTlog(ctx, sv, c.RekorURL, func(r *client.Rekor, b []byte) (*models.LogEntryAnon, error) {
-			return cosign.TLogUploadInTotoAttestation(ctx, r, signedPayload, b)
+			if c.RekorEntryType == "intoto" {
+				return cosign.TLogUploadInTotoAttestation(ctx, r, signedPayload, b)
+			} else {
+				return cosign.TLogUploadDSSEEnvelope(ctx, r, signedPayload, b)
+			}
+
 		})
 		if err != nil {
 			return err
@@ -198,13 +228,13 @@ func (c *AttestCommand) Exec(ctx context.Context, imageRef string) error {
 		return err
 	}
 
-	se, err := ociremote.SignedEntity(digest, ociremoteOpts...)
-	if err != nil {
-		return err
-	}
+	// We don't actually need to access the remote entity to attach things to it
+	// so we use a placeholder here.
+	se := ociremote.SignedUnknown(digest, ociremoteOpts...)
 
 	signOpts := []mutate.SignOption{
 		mutate.WithDupeDetector(dd),
+		mutate.WithRecordCreationTimestamp(c.RecordCreationTimestamp),
 	}
 
 	if c.Replace {

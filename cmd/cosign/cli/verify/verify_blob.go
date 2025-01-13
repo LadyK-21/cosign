@@ -24,22 +24,21 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 
-	ssldsse "github.com/secure-systems-lab/go-securesystemslib/dsse"
-	"github.com/sigstore/cosign/cmd/cosign/cli/fulcio"
-	"github.com/sigstore/cosign/cmd/cosign/cli/options"
-	"github.com/sigstore/cosign/cmd/cosign/cli/rekor"
-	"github.com/sigstore/cosign/pkg/blob"
-	"github.com/sigstore/cosign/pkg/cosign"
-	"github.com/sigstore/cosign/pkg/cosign/bundle"
-	"github.com/sigstore/cosign/pkg/cosign/pivkey"
-	"github.com/sigstore/cosign/pkg/cosign/pkcs11key"
-	"github.com/sigstore/cosign/pkg/oci/static"
-	sigs "github.com/sigstore/cosign/pkg/signature"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/options"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/rekor"
+	"github.com/sigstore/cosign/v2/internal/ui"
+	"github.com/sigstore/cosign/v2/pkg/blob"
+	"github.com/sigstore/cosign/v2/pkg/cosign"
+	"github.com/sigstore/cosign/v2/pkg/cosign/bundle"
+	"github.com/sigstore/cosign/v2/pkg/cosign/pivkey"
+	"github.com/sigstore/cosign/v2/pkg/cosign/pkcs11key"
+	"github.com/sigstore/cosign/v2/pkg/oci/static"
+	sigs "github.com/sigstore/cosign/v2/pkg/signature"
 
-	ctypes "github.com/sigstore/cosign/pkg/types"
 	"github.com/sigstore/sigstore/pkg/cryptoutils"
 )
 
@@ -51,12 +50,13 @@ func isb64(data []byte) bool {
 // nolint
 type VerifyBlobCmd struct {
 	options.KeyOpts
+	options.CertVerifyOptions
 	CertRef                      string
-	CertEmail                    string
-	CertIdentity                 string
-	CertOIDCIssuer               string
+	CAIntermediates              string
+	CARoots                      string
 	CertChain                    string
 	SigRef                       string
+	TrustedRootPath              string
 	CertGithubWorkflowTrigger    string
 	CertGithubWorkflowSHA        string
 	CertGithubWorkflowName       string
@@ -65,14 +65,12 @@ type VerifyBlobCmd struct {
 	IgnoreSCT                    bool
 	SCTRef                       string
 	Offline                      bool
-	SkipTlogVerify               bool
+	UseSignedTimestamps          bool
+	IgnoreTlog                   bool
 }
 
 // nolint
 func (c *VerifyBlobCmd) Exec(ctx context.Context, blobRef string) error {
-	var cert *x509.Certificate
-	opts := make([]static.Option, 0)
-
 	// Require a certificate/key OR a local bundle file that has the cert.
 	if options.NOf(c.KeyRef, c.CertRef, c.Sk, c.BundlePath) == 0 {
 		return fmt.Errorf("provide a key with --key or --sk, a certificate to verify against with --certificate, or a bundle with --bundle")
@@ -80,7 +78,32 @@ func (c *VerifyBlobCmd) Exec(ctx context.Context, blobRef string) error {
 
 	// Key, sk, and cert are mutually exclusive.
 	if options.NOf(c.KeyRef, c.Sk, c.CertRef) > 1 {
-		return &options.KeyParseError{}
+		return &options.PubKeyParseError{}
+	}
+
+	if c.KeyOpts.NewBundleFormat || checkNewBundle(c.BundlePath) {
+		if options.NOf(c.RFC3161TimestampPath, c.TSACertChainPath, c.RekorURL, c.CertChain, c.CARoots, c.CAIntermediates, c.CertRef, c.SigRef, c.SCTRef) > 1 {
+			return fmt.Errorf("when using --new-bundle-format, please supply signed content with --bundle and verification content with --trusted-root")
+		}
+		_, err := verifyNewBundle(ctx, c.BundlePath, c.TrustedRootPath, c.KeyRef, c.Slot, c.CertVerifyOptions.CertOidcIssuer, c.CertVerifyOptions.CertOidcIssuerRegexp, c.CertVerifyOptions.CertIdentity, c.CertVerifyOptions.CertIdentityRegexp, c.CertGithubWorkflowTrigger, c.CertGithubWorkflowSHA, c.CertGithubWorkflowName, c.CertGithubWorkflowRepository, c.CertGithubWorkflowRef, blobRef, c.Sk, c.IgnoreTlog, c.UseSignedTimestamps, c.IgnoreSCT)
+		if err == nil {
+			ui.Infof(ctx, "Verified OK")
+		}
+		return err
+	} else if c.TrustedRootPath != "" {
+		return fmt.Errorf("--trusted-root only supported with --new-bundle-format")
+	}
+
+	var cert *x509.Certificate
+	opts := make([]static.Option, 0)
+
+	var identities []cosign.Identity
+	var err error
+	if c.KeyRef == "" {
+		identities, err = c.Identities()
+		if err != nil {
+			return err
+		}
 	}
 
 	sig, err := base64signature(c.SigRef, c.BundlePath)
@@ -94,42 +117,34 @@ func (c *VerifyBlobCmd) Exec(ctx context.Context, blobRef string) error {
 	}
 
 	co := &cosign.CheckOpts{
-		CertEmail:                    c.CertEmail,
-		CertIdentity:                 c.CertIdentity,
-		CertOidcIssuer:               c.CertOIDCIssuer,
 		CertGithubWorkflowTrigger:    c.CertGithubWorkflowTrigger,
 		CertGithubWorkflowSha:        c.CertGithubWorkflowSHA,
 		CertGithubWorkflowName:       c.CertGithubWorkflowName,
 		CertGithubWorkflowRepository: c.CertGithubWorkflowRepository,
 		CertGithubWorkflowRef:        c.CertGithubWorkflowRef,
 		IgnoreSCT:                    c.IgnoreSCT,
+		Identities:                   identities,
 		Offline:                      c.Offline,
-		SkipTlogVerify:               c.SkipTlogVerify,
-	}
-	if c.RFC3161TimestampPath != "" && c.KeyOpts.TSACertChainPath == "" {
-		return fmt.Errorf("timestamp-cert-chain is required to validate a rfc3161 timestamp bundle")
-	}
-	if c.KeyOpts.TSACertChainPath != "" {
-		_, err := os.Stat(c.KeyOpts.TSACertChainPath)
-		if err != nil {
-			return fmt.Errorf("unable to open timestamp certificate chain file '%s: %w", c.KeyOpts.TSACertChainPath, err)
-		}
-		// TODO: Add support for TUF certificates.
-		pemBytes, err := os.ReadFile(filepath.Clean(c.KeyOpts.TSACertChainPath))
-		if err != nil {
-			return fmt.Errorf("error reading certification chain path file: %w", err)
-		}
-		// TODO: Update this logic once https://github.com/sigstore/timestamp-authority/issues/121 gets merged.
-		// This relies on untrusted leaf certificate.
-		tsaCertPool := x509.NewCertPool()
-		ok := tsaCertPool.AppendCertsFromPEM(pemBytes)
-		if !ok {
-			return fmt.Errorf("error parsing response into Timestamp while appending certs from PEM")
-		}
-		co.TSACerts = tsaCertPool
+		IgnoreTlog:                   c.IgnoreTlog,
+		UseSignedTimestamps:          c.TSACertChainPath != "" || c.UseSignedTimestamps,
 	}
 
-	if !c.SkipTlogVerify {
+	if c.RFC3161TimestampPath != "" && !co.UseSignedTimestamps {
+		return fmt.Errorf("when specifying --rfc3161-timestamp-path, you must also specify --use-signed-timestamps or --timestamp-certificate-chain")
+	} else if c.RFC3161TimestampPath == "" && co.UseSignedTimestamps {
+		return fmt.Errorf("when specifying --use-signed-timestamps or --timestamp-certificate-chain, you must also specify --rfc3161-timestamp-path")
+	}
+	if co.UseSignedTimestamps {
+		tsaCertificates, err := cosign.GetTSACerts(ctx, c.TSACertChainPath, cosign.GetTufTargets)
+		if err != nil {
+			return fmt.Errorf("unable to load TSA certificates: %w", err)
+		}
+		co.TSACertificate = tsaCertificates.LeafCert
+		co.TSARootCertificates = tsaCertificates.RootCert
+		co.TSAIntermediateCertificates = tsaCertificates.IntermediateCerts
+	}
+
+	if !c.IgnoreTlog {
 		if c.RekorURL != "" {
 			rekorClient, err := rekor.NewClient(c.RekorURL)
 			if err != nil {
@@ -144,19 +159,10 @@ func (c *VerifyBlobCmd) Exec(ctx context.Context, blobRef string) error {
 			return fmt.Errorf("getting Rekor public keys: %w", err)
 		}
 	}
+
 	if keylessVerification(c.KeyRef, c.Sk) {
-		// Use default TUF roots if a cert chain is not provided.
-		// This performs an online fetch of the Fulcio roots. This is needed
-		// for verifying keyless certificates (both online and offline).
-		if c.CertChain == "" {
-			co.RootCerts, err = fulcio.GetRoots()
-			if err != nil {
-				return fmt.Errorf("getting Fulcio roots: %w", err)
-			}
-			co.IntermediateCerts, err = fulcio.GetIntermediates()
-			if err != nil {
-				return fmt.Errorf("getting Fulcio intermediates: %w", err)
-			}
+		if err := loadCertsKeylessVerification(c.CertChain, c.CARoots, c.CAIntermediates, co); err != nil {
+			return err
 		}
 	}
 
@@ -205,7 +211,7 @@ func (c *VerifyBlobCmd) Exec(ctx context.Context, blobRef string) error {
 			if isb64(certBytes) {
 				certBytes, _ = base64.StdEncoding.DecodeString(b.Cert)
 			}
-			cert, err = loadCertFromPEM(certBytes)
+			bundleCert, err := loadCertFromPEM(certBytes)
 			if err != nil {
 				// check if cert is actually a public key
 				co.SigVerifier, err = sigs.LoadPublicKeyRaw(certBytes, crypto.SHA256)
@@ -213,6 +219,11 @@ func (c *VerifyBlobCmd) Exec(ctx context.Context, blobRef string) error {
 					return fmt.Errorf("loading verifier from bundle: %w", err)
 				}
 			}
+			// if a cert was passed in, make sure it matches the cert in the bundle
+			if cert != nil && !cert.Equal(bundleCert) {
+				return fmt.Errorf("the cert passed in does not match the cert in the provided bundle")
+			}
+			cert = bundleCert
 		}
 		opts = append(opts, static.WithBundle(b.Bundle))
 	}
@@ -237,7 +248,8 @@ func (c *VerifyBlobCmd) Exec(ctx context.Context, blobRef string) error {
 	}
 	// Set a cert chain if provided.
 	var chainPEM []byte
-	if c.CertChain != "" {
+	switch {
+	case c.CertChain != "":
 		chain, err := loadCertChainFromFileOrURL(c.CertChain)
 		if err != nil {
 			return err
@@ -257,6 +269,9 @@ func (c *VerifyBlobCmd) Exec(ctx context.Context, blobRef string) error {
 		if err != nil {
 			return err
 		}
+	case c.CARoots != "":
+		// CA roots + possible intermediates are already loaded into co.RootCerts with the call to
+		// loadCertsKeylessVerification above.
 	}
 
 	// Gather the cert for the signature and add the cert along with the
@@ -270,33 +285,23 @@ func (c *VerifyBlobCmd) Exec(ctx context.Context, blobRef string) error {
 		opts = append(opts, static.WithCertChain(certPEM, chainPEM))
 	}
 
-	// Use the DSSE verifier if the payload is a DSSE with the In-Toto format.
-	// TODO: This verifier only supports verification of a single signer/signature on
-	// the envelope. Either have the verifier validate that only one signature exists,
-	// or use a multi-signature verifier.
-	if isIntotoDSSE(blobBytes) {
-		// co.SigVerifier = dsse.WrapVerifier(co.SigVerifier)
-		signature, err := static.NewAttestation(blobBytes, opts...)
+	// Ignore Signed Certificate Timestamp if the flag is set or a key is provided
+	if shouldVerifySCT(c.IgnoreSCT, c.KeyRef, c.Sk) {
+		co.CTLogPubKeys, err = cosign.GetCTLogPubs(ctx)
 		if err != nil {
-			return err
-		}
-		// We have no artifact the attestation is tied to, so we can't do any claim
-		// verification.
-		// TODO: Add an option to support this to populate the v1.Hash for a claim.
-		if _, err = cosign.VerifyBlobAttestation(ctx, signature, co); err != nil {
-			return err
-		}
-	} else {
-		signature, err := static.NewSignature(blobBytes, sig, opts...)
-		if err != nil {
-			return err
-		}
-		if _, err = cosign.VerifyBlobSignature(ctx, signature, co); err != nil {
-			return err
+			return fmt.Errorf("getting ctlog public keys: %w", err)
 		}
 	}
 
-	fmt.Fprintln(os.Stderr, "Verified OK")
+	signature, err := static.NewSignature(blobBytes, sig, opts...)
+	if err != nil {
+		return err
+	}
+	if _, err = cosign.VerifyBlobSignature(ctx, signature, co); err != nil {
+		return err
+	}
+
+	ui.Infof(ctx, "Verified OK")
 	return nil
 }
 
@@ -308,7 +313,7 @@ func base64signature(sigRef, bundlePath string) (string, error) {
 	case sigRef != "":
 		targetSig, err = blob.LoadFileOrURL(sigRef)
 		if err != nil {
-			if !os.IsNotExist(err) {
+			if !errors.Is(err, fs.ErrNotExist) {
 				// ignore if file does not exist, it can be a base64 encoded string as well
 				return "", err
 			}
@@ -342,17 +347,4 @@ func payloadBytes(blobRef string) ([]byte, error) {
 		return nil, err
 	}
 	return blobBytes, nil
-}
-
-// isIntotoDSSE checks whether a payload is a Dead Simple Signing Envelope with the In-Toto format.
-func isIntotoDSSE(blobBytes []byte) bool {
-	DSSEenvelope := ssldsse.Envelope{}
-	if err := json.Unmarshal(blobBytes, &DSSEenvelope); err != nil {
-		return false
-	}
-	if DSSEenvelope.PayloadType != ctypes.IntotoPayloadType {
-		return false
-	}
-
-	return true
 }

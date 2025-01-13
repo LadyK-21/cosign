@@ -18,11 +18,9 @@ package policy
 import (
 	"context"
 	"fmt"
-	"log"
 
 	"cuelang.org/go/cue/cuecontext"
-	"github.com/sigstore/cosign/pkg/cosign"
-	"github.com/sigstore/cosign/pkg/cosign/rego"
+	"github.com/sigstore/cosign/v2/pkg/cosign/rego"
 )
 
 // EvaluatePolicyAgainstJson is used to run a policy engine against JSON bytes.
@@ -32,29 +30,32 @@ import (
 // policyType - cue|rego
 // policyBody - String representing either cue or rego language
 // jsonBytes - Bytes to evaluate against the policyBody in the given language
-func EvaluatePolicyAgainstJSON(ctx context.Context, name, policyType string, policyBody string, jsonBytes []byte) error {
+func EvaluatePolicyAgainstJSON(ctx context.Context, name, policyType string, policyBody string, jsonBytes []byte) (warnings error, errors error) {
 	switch policyType {
 	case "cue":
 		cueValidationErr := evaluateCue(ctx, jsonBytes, policyBody)
 		if cueValidationErr != nil {
-			return cosign.NewVerificationError("failed evaluating cue policy for %s: %v", name, cueValidationErr)
+			return nil, &EvaluationFailure{
+				fmt.Errorf("failed evaluating cue policy for %s: %w", name, cueValidationErr),
+			}
 		}
 	case "rego":
-		regoValidationErr := evaluateRego(ctx, jsonBytes, policyBody)
+		regoValidationWarn, regoValidationErr := evaluateRego(ctx, jsonBytes, policyBody)
 		if regoValidationErr != nil {
-			return cosign.NewVerificationError("failed evaluating rego policy for type %s: %s", name, regoValidationErr)
+			return regoValidationWarn, &EvaluationFailure{
+				fmt.Errorf("failed evaluating rego policy for type %s: %w", name, regoValidationErr),
+			}
 		}
+		// It is possible to return warning messages when the policy is compliant
+		return regoValidationWarn, regoValidationErr
 	default:
-		return fmt.Errorf("sorry Type %s is not supported yet", policyType)
+		return nil, fmt.Errorf("sorry Type %s is not supported yet", policyType)
 	}
-	return nil
+	return nil, nil
 }
 
 // evaluateCue evaluates a cue policy `evaluator` against `attestation`
 func evaluateCue(_ context.Context, attestation []byte, evaluator string) error {
-	log.Printf("Evaluating attestation: %s", string(attestation))
-	log.Printf("Evaluator: %s", evaluator)
-
 	cueCtx := cuecontext.New()
 	cueEvaluator := cueCtx.CompileString(evaluator)
 	if cueEvaluator.Err() != nil {
@@ -72,9 +73,6 @@ func evaluateCue(_ context.Context, attestation []byte, evaluator string) error 
 }
 
 // evaluateRego evaluates a rego policy `evaluator` against `attestation`
-func evaluateRego(_ context.Context, attestation []byte, evaluator string) error {
-	log.Printf("Evaluating attestation: %s", string(attestation))
-	log.Printf("Evaluating evaluator: %s", evaluator)
-
+func evaluateRego(_ context.Context, attestation []byte, evaluator string) (warnings error, errors error) {
 	return rego.ValidateJSONWithModuleInput(attestation, evaluator)
 }
